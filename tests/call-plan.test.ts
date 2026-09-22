@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildCallInput, fullName, newPlan } from "../lib/call-plan";
-import { callSchema } from "../lib/validation";
+import { callSchema, profileSchema } from "../lib/validation";
 import { instructions } from "../server/providers";
 import type { Call, Profile } from "../lib/types";
 
@@ -19,7 +19,10 @@ test("appointment wizard preserves reason, patient status, date alternatives, lo
   };
   const call = buildCallInput(plan, "es");
   assert.ok(callSchema.safeParse(call).success);
-  assert.equal(call.objective, "Pedir una cita con el dentista: Limpieza dental");
+  assert.equal(
+    call.objective,
+    "Pedir una cita con el dentista: Limpieza dental",
+  );
   assert.match(call.context, /Existing patient\/customer: yes/);
   assert.match(call.constraints, /2026-10-01: from 16:00 until 18:00/);
   assert.match(call.constraints, /2026-10-03: any time/);
@@ -85,4 +88,27 @@ test("full identity preserves every given name and surname and never substitutes
     instructions({ ...call, shareProfile: false }, profile),
     /Leonel David|Castañeda Mendoza|"preferredName":"Leo"/,
   );
+});
+
+test("Japanese interface preferences are accepted and private prompts stay separate from spoken language", () => {
+  const profile = profileSchema.parse({
+    firstName: "太郎",
+    lastName: "山田",
+    preferredName: "",
+    age: "",
+    sex: "",
+    nationality: "",
+    uiLanguage: "ja",
+  });
+  const call: Call = {
+    ...buildCallInput({ ...newPlan(), language: "en" }, "ja"),
+    id: "test",
+    status: "connected",
+    createdAt: "",
+    transcript: [],
+    uiLanguage: profile.uiLanguage,
+  };
+  const prompt = instructions(call, profile);
+  assert.match(prompt, /Speak ONLY English on the telephone/);
+  assert.match(prompt, /question, summary and details use Japanese/);
 });

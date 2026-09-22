@@ -9,14 +9,14 @@ export const callingCountries = [
   {
     code: "JP",
     prefix: "+81",
-    name: { en: "Japan", es: "Japón" },
+    name: { en: "Japan", es: "Japón", ja: "日本" },
     example: "070-1234-5678",
     timezone: "Asia/Tokyo",
   },
 ] as const satisfies readonly {
   code: CountryCode;
   prefix: string;
-  name: { en: string; es: string };
+  name: { en: string; es: string; ja: string };
   example: string;
   timezone: string;
 }[];

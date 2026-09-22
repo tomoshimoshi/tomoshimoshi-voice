@@ -1,3 +1,4 @@
+import { localeIndex } from "./types";
 import type { CallInput, Locale, Profile } from "./types";
 import {
   callingCountries,
@@ -40,6 +41,14 @@ export const purposeLabels = {
     followup: "Hacer seguimiento",
     custom: "Otra llamada",
   },
+
+  ja: {
+    appointment: "予約をする",
+    restaurant: "席を予約する",
+    inquiry: "問い合わせる",
+    followup: "経過を確認する",
+    custom: "その他",
+  },
 };
 export const categoryLabels = {
   en: {
@@ -53,6 +62,13 @@ export const categoryLabels = {
     doctor: "Médico",
     beauty: "Belleza y bienestar",
     other: "Otro servicio",
+  },
+
+  ja: {
+    dentist: "歯科",
+    doctor: "医療機関",
+    beauty: "美容・ウェルネス",
+    other: "その他のサービス",
   },
 };
 export function fullName(profile: Pick<Profile, "firstName" | "lastName">) {
@@ -88,15 +104,31 @@ export function callTitle(
 ) {
   if (plan.purpose !== "appointment")
     return purposeLabels[locale][plan.purpose];
-  const titles: Record<string, [string, string]> = {
-    dentist: ["Booking a dentist appointment", "Una cita con el dentista"],
-    doctor: ["Booking a doctor’s appointment", "Una cita con el médico"],
-    beauty: ["Booking a little time for you", "Un momento para ti"],
-    other: ["Booking your appointment", "Tu próxima cita"],
+  const titles: Record<string, [string, string, string]> = {
+    dentist: [
+      "Booking a dentist appointment",
+      "Una cita con el dentista",
+      "歯科の予約",
+    ],
+    doctor: [
+      "Booking a doctor’s appointment",
+      "Una cita con el médico",
+      "医療機関の予約",
+    ],
+    beauty: [
+      "Booking a little time for you",
+      "Un momento para ti",
+      "自分のための時間を予約",
+    ],
+    other: ["Booking your appointment", "Tu próxima cita", "次の予約"],
   };
   return (
-    titles[plan.category]?.[locale === "es" ? 1 : 0] ||
-    (locale === "es" ? "Tu llamada toma forma" : "Your call, taking shape")
+    titles[plan.category]?.[localeIndex(locale)] ||
+    (locale === "ja"
+      ? "通話の準備が進んでいます"
+      : locale === "es"
+        ? "Tu llamada toma forma"
+        : "Your call, taking shape")
   );
 }
 export function formatDateOption(d: DateOption, locale: Locale) {
@@ -107,33 +139,46 @@ export function formatDateOption(d: DateOption, locale: Locale) {
     d.from && d.to
       ? `${d.from} – ${d.to}`
       : d.from
-        ? `${locale === "es" ? "Desde" : "From"} ${d.from}`
+        ? `${locale === "ja" ? "開始" : locale === "es" ? "Desde" : "From"} ${d.from}`
         : d.to
-          ? `${locale === "es" ? "Hasta" : "Until"} ${d.to}`
-          : locale === "es"
-            ? "Cualquier hora"
-            : "Any time";
+          ? `${locale === "ja" ? "終了" : locale === "es" ? "Hasta" : "Until"} ${d.to}`
+          : locale === "ja"
+            ? "時間指定なし"
+            : locale === "es"
+              ? "Cualquier hora"
+              : "Any time";
   return `${date} · ${time}`;
 }
 export function buildCallInput(plan: CallPlan, locale: Locale): CallInput {
   const timezone = callingCountries.find(
     (country) => country.code === plan.country,
   )!.timezone;
-  const appointmentRequest: Record<string, [string, string]> = {
-    dentist: ["Book a dentist appointment", "Pedir una cita con el dentista"],
-    doctor: ["Book a doctor’s appointment", "Pedir una cita con el médico"],
+  const appointmentRequest: Record<string, [string, string, string]> = {
+    dentist: [
+      "Book a dentist appointment",
+      "Pedir una cita con el dentista",
+      "歯科を予約する",
+    ],
+    doctor: [
+      "Book a doctor’s appointment",
+      "Pedir una cita con el médico",
+      "医療機関を予約する",
+    ],
     beauty: [
       "Book a beauty or wellness appointment",
       "Pedir una cita de belleza y bienestar",
+      "美容・ウェルネスの予約をする",
     ],
   };
   const objective =
     plan.purpose === "appointment"
-      ? `${appointmentRequest[plan.category]?.[locale === "es" ? 1 : 0] || purposeLabels[locale].appointment}: ${plan.reason.trim()}`
+      ? `${appointmentRequest[plan.category]?.[localeIndex(locale)] || purposeLabels[locale].appointment}: ${plan.reason.trim()}`
       : plan.purpose === "restaurant"
-        ? locale === "es"
-          ? `Reservar una mesa para ${plan.people} personas.`
-          : `Reserve a table for ${plan.people} people.`
+        ? locale === "ja"
+          ? `${plan.people}名分の席を予約する。`
+          : locale === "es"
+            ? `Reservar una mesa para ${plan.people} personas.`
+            : `Reserve a table for ${plan.people} people.`
         : `${purposeLabels[locale][plan.purpose]}: ${plan.reason.trim()}`;
   const context = [
     plan.business.trim() && `Business/recipient: ${plan.business.trim()}`,

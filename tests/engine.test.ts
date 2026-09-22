@@ -57,6 +57,7 @@ globalThis.fetch = async (input, init) => {
               text: JSON.stringify({
                 en: "Translated text",
                 es: "Texto traducido",
+                ja: "翻訳されたテキスト",
               }),
             },
           ],
@@ -358,6 +359,16 @@ test("live bridge relays audio, asks the user, resumes the same session and comp
     (x) => x.url === "https://api.openai.com/v1/responses",
   )!;
   assert.equal((translation.body.text as any).format.type, "json_schema");
+  assert.deepEqual((translation.body.text as any).format.schema.required, [
+    "en",
+    "es",
+    "ja",
+  ]);
+  assert.equal(
+    (await storedCall(c.id))?.transcript.find((line) => line.translations.ja)
+      ?.translations.ja,
+    "翻訳されたテキスト",
+  );
   assert.equal(engine.sessions.get(c.id)?.ai, ai);
   ai.event({
     type: "response.done",

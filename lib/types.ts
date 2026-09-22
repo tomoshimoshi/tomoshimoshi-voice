@@ -1,4 +1,4 @@
-export type Locale = "en" | "es";
+export type Locale = "es" | "en" | "ja";
 export type Status =
   "dialing" | "connected" | "waiting" | "completed" | "cancelled" | "failed";
 export type Profile = {
@@ -65,3 +65,5 @@ export type Readiness = {
 };
 export const terminal = (status: Status) =>
   ["completed", "cancelled", "failed"].includes(status);
+export const localeIndex = (locale: Locale) =>
+  ({ en: 0, es: 1, ja: 2 })[locale];

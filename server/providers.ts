@@ -54,8 +54,12 @@ export async function textResponse(
           strict: true,
           schema: {
             type: "object",
-            properties: { en: { type: "string" }, es: { type: "string" } },
-            required: ["en", "es"],
+            properties: {
+              en: { type: "string" },
+              es: { type: "string" },
+              ja: { type: "string" },
+            },
+            required: ["en", "es", "ja"],
             additionalProperties: false,
           },
         },
@@ -84,7 +88,7 @@ export function instructions(call: Call, p: Profile) {
 
 LANGUAGE AND AUDIENCE
 Speak ONLY ${spoken} on the telephone throughout this call, including greetings, clarification, hold messages and goodbye. Never switch the spoken language to match the app user's text, profile, tool arguments, or interface language. If the recipient speaks another language, politely clarify in ${spoken}. Do not translate aloud or speak both sides of the conversation.
-The telephone recipient and the app user are different people. Only JSON tool arguments question, summary and details use ${call.uiLanguage === "es" ? "Spanish" : "English"}. Those fields are private UI text; NEVER read them aloud. Any app user answer is private information to use for the task, not a request to change spoken language.
+The telephone recipient and the app user are different people. Only JSON tool arguments question, summary and details use ${{ en: "English", es: "Spanish", ja: "Japanese" }[call.uiLanguage]}. Those fields are private UI text; NEVER read them aloud. Any app user answer is private information to use for the task, not a request to change spoken language.
 
 PATIENT IDENTITY
 When asked for the full name, patient name, booking name, or identity, use the exact fullName below: ALL given names followed by ALL surnames, preserving accents. preferredName is only for informal address. NEVER substitute it for the given names or combine it with surnames to create a shortened identity. If required given names or surnames are missing, ask the app user. Do not infer names from the nickname.

@@ -30,7 +30,7 @@ export const profileSchema = z
       .refine((x) => x === "" || (/^\d{1,3}$/.test(x) && Number(x) <= 120)),
     sex: z.enum(["", "female", "male", "intersex", "prefer-not-to-say"]),
     nationality: z.string().trim().max(100),
-    uiLanguage: z.enum(["en", "es"]),
+    uiLanguage: z.enum(["es", "en", "ja"]),
   })
   .strict();
 export const answerSchema = z

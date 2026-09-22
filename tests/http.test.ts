@@ -122,6 +122,7 @@ test("HTTP onboarding saves only the authenticated profile and enforces completi
     ...original.profile,
     firstName: "Alice",
     lastName: "Example",
+    uiLanguage: "ja",
   };
   assert.equal(
     (
@@ -142,6 +143,11 @@ test("HTTP onboarding saves only the authenticated profile and enforces completi
       })
     ).status,
     200,
+  );
+  assert.equal(
+    (await (await fetch(`${base}/state`, { headers: alice })).json()).profile
+      .uiLanguage,
+    "ja",
   );
   assert.equal(
     (await (await fetch(`${base}/state`, { headers: bob })).json()).profile
