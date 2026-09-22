@@ -39,7 +39,7 @@ export function stripeAdapter(stripe: Stripe): PaymentProvider {
       const session = await stripe.checkout.sessions.create(
         {
           mode: "payment",
-          payment_method_types: ["card"],
+          integration_identifier: "tomoshimoshi_credits_qmzpavhk",
           line_items: [{ price: payment.provider_price_id, quantity: 1 }],
           client_reference_id: payment.id,
           metadata,

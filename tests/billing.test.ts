@@ -582,6 +582,8 @@ test("Stripe adapter sends only configured price and trusted metadata, without c
   );
   assert.equal(body.get("line_items[0][quantity]"), "1");
   assert.equal(body.has("line_items[0][price_data]"), false);
+  assert.equal(body.has("payment_method_types[0]"), false);
+  assert.match(body.get("integration_identifier")!, /^tomoshimoshi_credits_[a-z]{8}$/);
 });
 
 test("Stripe adapter validates actual received money and expanded one-time line items", async () => {
