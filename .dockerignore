@@ -1,0 +1,17 @@
+# Only source required by the voice image enters the build context.
+# Local credentials, database files, backups and node_modules stay on this host.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!server/
+!server/**
+!lib/
+!lib/**
+!db/
+!db/migrations/
+!db/migrations/*.sql
+!scripts/
+!scripts/migrate.ts
+!scripts/reconcile-billing.ts

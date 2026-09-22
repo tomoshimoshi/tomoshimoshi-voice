@@ -1,0 +1,44 @@
+{
+  "name": "tomoshimoshi-voice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch server/index.ts",
+    "start": "node --import tsx server/index.ts",
+    "start:voice": "npm start",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "lint": "eslint .",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "backup": "node scripts/backup.mjs",
+    "test:integration": "node scripts/smoke-server.mjs",
+    "db:migrate": "node --import tsx scripts/migrate.ts",
+    "db:import-sqlite": "node --import tsx scripts/import-sqlite.ts",
+    "billing:reconcile": "node --import tsx scripts/reconcile-billing.ts",
+    "test:billing:postgres": "node --import tsx --test tests/integration/billing-postgres.test.ts"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "libphonenumber-js": "1.13.13",
+    "pg": "^8.23.0",
+    "stripe": "^22.6.2",
+    "tsx": "4.23.13",
+    "ws": "8.21.3",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@types/node": "26.5.1",
+    "@types/pg": "^8.23.1",
+    "@types/ws": "8.18.1",
+    "eslint": "^9.39.5",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "@typescript-eslint/parser": "8.70.1",
+    "@typescript-eslint/eslint-plugin": "8.70.1",
+    "globals": "16.4.0"
+  }
+}
