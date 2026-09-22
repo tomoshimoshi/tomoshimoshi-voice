@@ -55,7 +55,7 @@ Un solo worker de voz por base de datos, protegido por un advisory lock en una c
 
 Ante un fallo de persistencia, el servicio deja de aceptar nuevas llamadas, cierra audio, intenta colgar y deja registros durables para recuperación. `/healthz` devuelve 503. Un supervisor debe reiniciarlo tras recuperar la conectividad. El límite de duración en Telnyx cubre la pérdida simultánea de la respuesta de marcado y los callbacks.
 
-No se ha realizado despliegue público ni prueba de carga. Antes de abrirlo públicamente configurar presupuesto/cuotas de proveedor, monitorización, política de retención, recuperación de backups y protección antiabuso de Auth0. La separación por usuario se aplica en el backend; no se afirma usar Row Level Security. Las credenciales PostgreSQL son solo del servidor y deben restringirse a esta aplicación. La cuenta de migraciones necesita DDL; usar un rol distinto con DML mínimo para `DATABASE_URL_POOLED` en producción.
+El worker está desplegado en Railway; la documentación no acredita una prueba de carga. Para operar públicamente configurar presupuesto/cuotas de proveedor, monitorización, política de retención, recuperación de backups y protección antiabuso de Auth0. La separación por usuario se aplica en el backend; no se afirma usar Row Level Security. Las credenciales PostgreSQL son solo del servidor y deben restringirse a esta aplicación. La cuenta de migraciones necesita DDL; usar un rol distinto con DML mínimo para `DATABASE_URL_POOLED` en producción.
 
 ## Backups
 
@@ -69,7 +69,7 @@ Las pruebas usan PostgreSQL real embebido en PGlite, sin credenciales locales. C
 
 Referencias: [conexiones Neon](https://neon.com/docs/connect/connection-pooling), [TLS de node-postgres](https://node-postgres.com/features/ssl), [Auth0 y verificación de correo](https://auth0.com/docs/manage-users/user-accounts/verify-emails).
 
-### Resultado de esta migración
+### Resultado histórico de la migración inicial
 
 - Neon: un propietario reservado, un perfil y seis llamadas importadas. Se compararon los objetos completos con SQLite y coinciden. Todos los índices están válidos. La conexión del cliente está cifrada con TLS y valida el certificado; Neon termina TLS en su proxy (la vista interna `pg_stat_ssl` del motor no refleja ese tramo).
 - `npm run check`: 49 pruebas aprobadas, TypeScript y compilación de producción correctos.

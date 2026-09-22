@@ -78,13 +78,13 @@ Apply the new migration through the existing tool to your development/staging da
 npm run db:migrate
 ```
 
-No production database migration is performed by the implementation or tests. Restart the voice server after applying it. A running server without migration 003 cannot serve the new wallet endpoints.
+The application startup and tests do not apply migrations to the production database automatically. Restart the voice server after applying it. A running server without migration 003 cannot serve the new wallet endpoints.
 
 The public signed Stripe endpoint is **`POST /webhooks/stripe` on the voice server**, normally port 3001, parallel to `/webhooks/telnyx`. Do not send Stripe webhooks to the authenticated Next.js `/api` proxy. In the deployed reverse proxy, expose this exact POST endpoint alongside the existing signed telephony/media paths, preserving the raw request body. All other application API paths still require the internal token and signed Auth0 identity.
 
 ## Exact local test procedure
 
-1. Use only your Stripe **test/sandbox** account. Configure the five required Stripe values above, `APP_BASE_URL`, existing database/Auth0/internal-token settings, and migrate your development database. No call credentials are needed just to test purchases.
+1. Use only your Stripe **test/sandbox** account. Configure the five required Stripe values above, `APP_BASE_URL`, database/internal-token settings in voice and Auth0 in the web repository, and migrate your development database. No call credentials are needed just to test purchases.
 2. Install/login to the [Stripe CLI](https://docs.stripe.com/stripe-cli), then run:
 
    ```sh
@@ -107,11 +107,10 @@ The public signed Stripe endpoint is **`POST /webhooks/stripe` on the voice serv
 npm run lint
 npm run typecheck
 npm test
-npm run build
 npm run test:integration
 ```
 
-The repository's isolated PGlite tests apply every real migration, use the actual domain SQL, inject rollback failures, and mock only providers. They cover all three packages, signature validation, wrong amounts/prices/users/currencies, duplicate/out-of-order events, reservations/capture/release/refund, immutable pricing, exact charges, no expiry, ledger reconciliation, and HTTP authorization. They do not read `.env` or contact live Stripe. Native TypeScript 7 remains the type checker; the official TypeScript 6 compatibility alias supports ESLint's compiler API.
+The repository's isolated PGlite tests apply every real migration, use the actual domain SQL, inject rollback failures, and mock only providers. They cover all three packages, signature validation, wrong amounts/prices/users/currencies, duplicate/out-of-order events, reservations/capture/release/refund, immutable pricing, exact charges, no expiry, ledger reconciliation, and HTTP authorization. They do not read `.env` or contact live Stripe. The standalone voice repository uses the TypeScript compiler configured in `package.json`; Next.js builds run only in the web repository.
 
 PGlite serializes its transactions, so **native PostgreSQL concurrency is tested separately**, using a dedicated local database named `tomoshimoshi_billing_test`. CI starts a disposable PostgreSQL 17 service. To run locally:
 
@@ -127,6 +126,6 @@ Do not simply replace the key: this release intentionally rejects live mode. Bef
 
 References: [Stripe webhook signatures/retries](https://docs.stripe.com/webhooks), [Checkout fulfillment](https://docs.stripe.com/checkout/fulfillment), [Telnyx carrier-enforced call limits](https://developers.telnyx.com/api-reference/call-commands/dial).
 
-### Implementation verification (2026-09-22)
+### Historical verification before repository separation (2026-09-22)
 
-The automated suite and production build were run locally. Native PostgreSQL tests used a disposable loopback instance, not the application's database. Browser checks used the real Next.js → authenticated application API → migrated disposable PostgreSQL-compatible database flow, with a fake Stripe provider and test signing secret. Desktop and 390×844 Spanish layouts had no horizontal overflow or framework errors. A pending return kept ¥0 available; a synthetic signed paid webhook changed it to ¥1,000; replay returned HTTP 200 and left the balance at ¥1,000. The checkout-failure state was also verified. No real telephone call, live Stripe API request, hosted test-card payment, or production migration was performed. A real hosted Stripe test Checkout remains an operator acceptance step after configuring the endpoint signing secret.
+Before the repository split, the automated suite and web production build were run locally. Native PostgreSQL tests used a disposable loopback instance, not the application's database. Browser checks used the real Next.js → authenticated application API → migrated disposable PostgreSQL-compatible database flow, with a fake Stripe provider and test signing secret. Desktop and 390×844 Spanish layouts had no horizontal overflow or framework errors. A pending return kept ¥0 available; a synthetic signed paid webhook changed it to ¥1,000; replay returned HTTP 200 and left the balance at ¥1,000. The checkout-failure state was also verified. No real telephone call, live Stripe API request, hosted test-card payment, or production migration was performed. A real hosted Stripe test Checkout remains an operator acceptance step after configuring the endpoint signing secret.

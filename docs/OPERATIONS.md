@@ -1,83 +1,73 @@
-> Historical setup reference. Use the [current voice README](../README.md) and [Railway runbook](RAILWAY.md) for the separated repositories. Web/Auth0 commands run in `tomoshimoshi`; voice/database commands run here.
+# Operación del servidor de voz
 
-# Operations
+Guía del servicio separado en Railway. La configuración detallada está en [RAILWAY](RAILWAY.md), el contrato en [API](API.md) y las decisiones en [arquitectura](ARCHITECTURE.md).
 
-> Historical SQLite baseline (September 2026). Database, account isolation, signup, API origins and backup instructions below are superseded by [PostgreSQL + Auth0](POSTGRESQL.md). Do not follow the old SQLite runtime/restore instructions for the current release.
+## Ubicación y proceso
 
+| Elemento | Ubicación |
+| --- | --- |
+| Web | `https://www.tomoshimoshi.com` · Vercel |
+| Voz | `https://voice-production-53b8.up.railway.app` · Railway, servicio `voice` |
+| Código de voz | `tomoshimoshi/tomoshimoshi-voice`, rama `main` |
+| Datos | PostgreSQL en Neon; no dependen del disco efímero del contenedor |
 
-## Supported deployment boundary
+Mantener una réplica, suspensión desactivada y despliegues automáticos desactivados. El Dockerfile fija `VOICE_HOST=0.0.0.0` y utiliza el `PORT` de la plataforma. Los secretos se administran en Railway; la web conserva solo sus credenciales Auth0 y el secreto de comunicación necesario.
 
-Run one voice process and one Next.js process on a persistent host with Node 24+. Keep port 3000 private: the application has no user authentication and its API intentionally accepts local Host/origin values only. A public HTTPS tunnel or reverse proxy may forward to port 3001 for signed callbacks and tokenized WebSockets. Protect the host, `.env` and the data directory at the operating-system level. No public deployment is included in this handoff.
-
-`npm ci` installs the complete build/check toolchain. `npm run build` creates the web production bundle. `npm start` starts both processes; runtime tools `tsx` and `concurrently` are runtime dependencies. A prebuilt installation can omit development dependencies when it only needs to run. A supervisor can use `npm run start:voice` and `npm run start:web` separately, with the same working directory and configuration. Use a stop grace period of at least 25 seconds. Never launch multiple voice workers against this database.
-
-The voice process binds its port before recovering persisted calls. A duplicate launch fails before modifying active-call state. `/healthz` returns 503 while startup recovery or shutdown is in progress and 200 after initialization. The settings page reports configuration presence and pending old-call cleanup, not guaranteed provider connectivity.
-
-## Configuration
-
-See `.env.example` and [SETUP](SETUP.md). Restart both processes after changing configuration. Optional operational settings:
-
-- Storage and configuration identifiers retain their legacy names for compatibility after the ToMoshiMoshi rename; existing data, service tokens, language preferences and saved drafts remain usable.
-- `CALLORI_DATA_DIR`: persistent private directory; default `.callori`. Both processes must resolve it to the same location.
-- `CALLORI_INTERNAL_TOKEN`: optional shared internal secret, at least 32 non-whitespace characters. If omitted, a random token is generated in the data directory. Empty/malformed stored tokens fail closed.
-- `VOICE_PORT`: voice listener port, default 3001. Also update `VOICE_SERVER_URL` and the tunnel target when changing it.
-- `VOICE_SERVER_URL`: internal voice origin, default `http://127.0.0.1:3001`.
-- `MAX_CALL_SECONDS`: clamped to 30–1200; default 600, also sent to Telnyx as a carrier-side cap.
-- `OPENAI_REALTIME_MODEL`, `OPENAI_TEXT_MODEL`: model overrides. Validate changes with controlled calls; names/configuration are not proof of account access.
-
-## Calling countries
-
-`lib/phone.ts` contains the controlled country list, initially Japan only. The UI parses local or international input with `libphonenumber-js/max`, formats on blur and previews the international destination. The API accepts only canonical E.164 numbers validated against that same list; an environment wildcard never bypasses the country restriction. Adding a country requires an explicit list entry, localized label/example, normalization and rejection tests, and verified Telnyx destination permissions. Number validation checks numbering-plan plausibility, not ownership or reachability.
-
-References: [library documentation](https://github.com/catamphetamine/libphonenumber-js), [JNTO local/international number example](https://www.japan.travel/en/plan/hotline/).
-
-## Release procedure
-
-1. Stop creating new calls and wait for the active call to end. Confirm no call is pending in the UI.
-2. Create an integrity-checked backup outside the deployment directory.
-3. Run `npm ci`, `npm run check`, `npm run test:integration`, and `npm audit --omit=dev --audit-level=high`.
-4. Stop the old processes gracefully, then start the new build. Never replace the web bundle underneath a running instance during a call.
-5. Check `curl -f http://127.0.0.1:3001/healthz`, open the UI, inspect Settings and confirm the tunnel is still pointing to the correct port.
-6. Run the controlled real-call acceptance cases in [VERIFICATION](https://github.com/tomoshimoshi/tomoshimoshi/blob/codex/railway-voice/docs/VERIFICATION.md) before considering changed voice behavior accepted.
-
-GitHub Actions implements the automated checks with Node 24 and pinned official action revisions. The workflow is provided but was not executed on GitHub during this local handoff. There is no automatic deployment.
-
-## Backup and restore
+## Comprobar salud sin modificar datos
 
 ```sh
-npm run backup -- /private/backup-location/tomoshimoshi-2026-09-15.sqlite
+curl --fail-with-body https://voice-production-53b8.up.railway.app/healthz
 ```
 
-The backup uses SQLite's online backup API, includes committed WAL data, validates `PRAGMA integrity_check`, creates mode 0600 files and refuses overwrite. It backs up profile, calls, transcripts and operational recovery records. It does not back up `.env` or the internal token; keep credentials in a separate protected store. Backup destinations should be on encrypted storage with an explicit retention policy. The application does not schedule backups automatically.
+Esperado: HTTP 200 y `{"status":"ok"}`. La ruta comprueba aceptación de tráfico, salud de persistencia y acceso SQL. No certifica OpenAI, Telnyx, Stripe ni saldo.
 
-To restore:
+Comprobar después el panel con sesión iniciada: perfil, historial y saldo. La API privada sin credenciales debe devolver 401. `readiness` añade controles de telefonía y recuperación; no hacer una llamada real como prueba automática de despliegue.
 
-1. End all calls and stop both processes. Verify the chosen backup is outside the data directory you are about to move.
-2. Preserve the whole current data directory under a different name; do not copy only a live `.sqlite` file and discard its WAL.
-3. Create a new private data directory, copy the verified backup into it as `callori.sqlite`, and set the file to 0600 and directory to 0700.
-4. Retain your existing `.env`. If the internal token is generated locally, allow a new one to be generated for both processes; if configured explicitly, keep the same value in both.
-5. Start ToMoshiMoshi and inspect Settings/history. Restored unfinished calls are marked interrupted; they are never redialed or represented as resumed sessions. Persisted carrier calls are reconciled by attempting to end them.
+## Desplegar o volver a una revisión anterior
 
-For rollback, stop both services, restore the prior code/build and a compatible database snapshot. The current schema adds `provider_calls.hangup_id` automatically and non-destructively. Do not assume an older build understands new schema changes; test rollback against a copy before a release.
+1. Preparar y verificar código/configuración antes de interrumpir el servicio. Si cambia el esquema, revisar migraciones y respaldo como operación independiente.
+2. Reservar mantenimiento sin nuevas solicitudes y confirmar que no hay llamadas activas.
+3. Detener el despliegue anterior. En Railway, `Remove` del **despliegue** lo detiene y conserva una entrada en el historial; no borrar el servicio ni los datos.
+4. Esperar la terminación y la liberación del bloqueo de PostgreSQL.
+5. Desplegar la revisión/configuración elegida con una réplica. Comprobar commit, repositorio y resultado del healthcheck.
+6. Verificar el acceso desde la web, la disponibilidad y los logs de arranque.
 
-## Failure handling
+Existe una interrupción breve de la API. `Restart` conserva las variables del despliegue original: para aplicar variables nuevas se necesita un nuevo despliegue. `overlapSeconds=0` por sí solo no evita que Railway intente arrancar dos workers durante una sustitución.
 
-- **Cancel during dialing:** cancellation waits for the pending carrier response, then hangs up the returned call ID. Media authorization is blocked once stopping begins.
-- **Hangup fails:** local audio sockets stop immediately; the carrier hangup is retried using a persisted command ID. A failed command is followed by a carrier-status check; only explicit `is_alive: false` confirms an already-ended call. Unknown states remain pending.
-- **Process crash/restart:** active local calls become failed. Persisted hangups are retried at startup and every 30 seconds; new calls are blocked while a previous terminal record still needs carrier cleanup.
-- **Late carrier callback:** a known local call ID can recover the carrier control ID even after the local call was marked failed, allowing cleanup. No callback can create a new outbound call.
-- **Shutdown deadline:** ToMoshiMoshi attempts cleanup and exits within 20 seconds. Recovery records remain on disk if cleanup does not complete. The Telnyx time cap is the final fallback, not an assertion that immediate hangup succeeded.
-- **Missing app answer:** the same call waits up to 90 seconds, then ends. It never treats silence as approval.
-- **Audio backpressure/provider failure:** bounded buffers stop the call instead of accumulating unlimited delayed speech.
+Un rollback de código no deshace migraciones SQL ni movimientos de saldo. Comprobar compatibilidad antes de volver a una versión anterior. Ver [Railway](RAILWAY.md) para el procedimiento completo.
 
-Do not delete pending carrier records just to unblock the UI. Check the Telnyx portal for active calls, restore connectivity/credentials, and let recovery reconcile the state. If callbacks and the dial response are both lost before the carrier control ID is known, local cleanup cannot address that call; use the Telnyx portal and carrier-side time limit.
+## Recuperación y diagnóstico
 
-## Data and logs
+| Síntoma | Comprobar | Acción |
+| --- | --- | --- |
+| `A voice worker already owns this database` | Worker previo o proceso local conectado a la misma base | Detener el propietario correcto; no eliminar el bloqueo para forzar dos procesos |
+| 503 en `/healthz` | Arranque/apagado, conectividad SQL, `call_persistence_failed` | Restaurar conectividad y reiniciar controladamente; no declarar sano al proceso a mano |
+| Web sin estado, API privada 401 | Igualdad del token interno; firma/caducidad de identidad | Corregir configuración entre web y voz; no enviar secretos al navegador |
+| `INVALID_ORIGIN` en la web | `APP_BASE_URL`, Host y origen exactos | Usar el dominio canónico, incluido `www` cuando corresponda |
+| `NOT_CONFIGURED` | Flags, variables de telefonía y origen HTTPS | Revisar `readiness.checks`; presencia no garantiza validez de credenciales |
+| `RECOVERY_PENDING` | `provider_calls` pendientes de una llamada terminal | Confirmar el estado del proveedor y permitir recuperación; no borrar registros para habilitar llamadas |
+| `BILLING_NOT_CONFIGURED` | Clave de prueba, firma y tres Price IDs | Completar la configuración de [Stripe](BILLING.md) sin quitar la protección de modo test |
+| `INSUFFICIENT_CREDIT` | Saldo disponible, reservado y tarifa | Revisar recarga o reserva pendiente; no editar saldos directamente |
+| Llamada finalizada con cargo pendiente | Eventos de respuesta/cuelgue y evidencia del proveedor | Ejecutar informe de conciliación y seguir [BILLING](BILLING.md) |
 
-The SQLite database and profile persist indefinitely until managed by the operator. User-facing retention/deletion and history pagination are TODOs. There is no application-level encryption at rest and no audio recording by ToMoshiMoshi. Verify provider-side recording/retention separately.
+Un cuelgue fallido solo se trata como exitoso si Telnyx confirma que la llamada ya no está activa. El worker conserva el control y reintenta. Tras reiniciar, las conversaciones previas no se reanudan; quedan fallidas y se intenta cerrar cualquier llamada pendiente en el proveedor.
 
-Console warnings identify translation failures and pending carrier cleanup using an internal call UUID. Credentials, audio payloads, media URLs/tokens and transcript text are not logged by application diagnostics. Store process logs privately; inspect the call error/status in the UI for user-facing detail. Metrics, alerts and distributed tracing are not implemented.
+## Logs y conciliación
 
-## Prepaid billing
+Los logs registran eventos como `call_persistence_failed`, `hangup_recovery_pending`, `payment.webhook_failed`, `wallet.reserved` y `call.charged`, junto con identificadores de correlación. Para investigar, seguir el ID de llamada o pago entre logs, base y proveedor. No copiar tokens, transcripciones ni cuerpos privados a tickets públicos.
 
-See [Billing architecture, Stripe test setup, manual tests and reconciliation](BILLING.md). Apply migration `003_billing.sql` before running this version. Credits never expire; the current Japan rate is ¥125/minute.
+`npm run billing:reconcile` sin argumentos es un informe de solo lectura: detecta discrepancias entre ledger/saldo/reservas, llamadas vencidas para revisión y pagos pendientes. Puede devolver código no cero si hay algo que atender. El conteo de outbox pendiente no significa que exista un consumidor configurado.
+
+La variante con `--call` **modifica la liquidación** y exige evidencia del proveedor; seguir el procedimiento de [facturación](BILLING.md). No programar reparaciones a ciegas ni liberar reservas solo porque ha transcurrido tiempo. Este repositorio no instala un cron de conciliación.
+
+## Backups y datos
+
+Ejecutar desde un entorno protegido con `pg_dump` compatible y conexión directa:
+
+```sh
+npm run backup -- /ruta/privada/tomoshimoshi.dump
+```
+
+La herramienta evita sobrescrituras y crea el archivo con permisos privados. No incluye secretos `.env`. Verificar `pg_restore --list` y ensayar restauración en una base aislada antes de depender del respaldo. La ventana de recuperación de Neon se configura aparte; el código no cambia su plan.
+
+No editar migraciones ya aplicadas, reimportar SQLite por haber cambiado de repositorio, borrar el ledger ni resetear saldos para resolver incidencias. El historial financiero usa movimientos compensatorios; ver [PostgreSQL](POSTGRESQL.md) y [BILLING](BILLING.md).
