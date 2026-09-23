@@ -12,6 +12,7 @@ process.env.VOICE_PORT = "3191";
 process.env.LIVE_CALLS_ENABLED = "false";
 process.env.APP_BASE_URL = "http://localhost:3190";
 Object.assign(process.env, {
+  STRIPE_MODE: "test",
   STRIPE_SECRET_KEY: "sk_test_fixture",
   STRIPE_WEBHOOK_SECRET: "whsec_fixture",
   STRIPE_PRICE_CREDIT_1000: "price_1000",

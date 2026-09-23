@@ -60,6 +60,8 @@ import {
 import { verifiedStripeEvent } from "./billing/stripe";
 import { BillingConfigurationError } from "./billing/stripe/config";
 import { billingLog } from "./billing/events";
+import { processReversalEvent, reversalEvents } from "./billing/reversals";
+import { reconcilePayment, reconcilePayments } from "./billing/reconcile";
 import { observeCallEvent } from "./calls/billing";
 import { voiceListener } from "./listener";
 const token = internalToken();
@@ -67,6 +69,8 @@ const listener = voiceListener();
 let accepting = false;
 let shuttingDown = false;
 let recoveryTimer: NodeJS.Timeout | undefined = undefined;
+let billingTimer: NodeJS.Timeout | undefined;
+let billingRun: Promise<void> | undefined;
 async function body(req: IncomingMessage, limit = 32768) {
   let size = 0;
   const parts: Buffer[] = [];
@@ -115,7 +119,8 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: "INVALID_SIGNATURE" });
       }
       try {
-        await processStripeEvent(event);
+        if (reversalEvents.has(event.type)) await processReversalEvent(event);
+        else await processStripeEvent(event);
       } catch (error) {
         billingLog("payment.webhook_failed", { eventId: event.id });
         throw error;
@@ -220,6 +225,8 @@ const server = createServer(async (req, res) => {
       /^\/billing\/payments\/([0-9a-f-]{36})$/,
     );
     if (req.method === "GET" && paymentMatch) {
+      try { await reconcilePayment(paymentMatch[1], userId); }
+      catch { billingLog("payment.reconciliation_failed", { paymentId: paymentMatch[1] }); }
       const payment = await paymentStatus(userId, paymentMatch[1]);
       return json(res, payment ? 200 : 404, payment || { error: "NOT_FOUND" });
     }
@@ -351,6 +358,7 @@ const server = createServer(async (req, res) => {
       "IDEMPOTENCY_CONFLICT",
       "PRICING_NOT_CONFIGURED",
       "PAYMENT_MISMATCH",
+      "PAYMENT_REVIEW_REQUIRED",
       "UNSUPPORTED_PACKAGE",
       "ACTIVE_CALL",
       "PROFILE_REQUIRED",
@@ -446,11 +454,19 @@ recoveryTimer = setInterval(() => {
     .catch(() => console.error("Recovery check failed"));
 }, 30000);
 recoveryTimer.unref();
+billingTimer = setInterval(() => {
+  if (billingRun || shuttingDown) return;
+  billingRun = reconcilePayments()
+    .catch(() => billingLog("payment.reconciliation_unavailable"))
+    .finally(() => { billingRun = undefined; });
+}, 60000);
+billingTimer.unref();
 export async function shutdown(exit = false) {
   if (shuttingDown) return;
   shuttingDown = true;
   accepting = false;
   clearInterval(recoveryTimer);
+  clearInterval(billingTimer);
   server.close();
   const deadline = setTimeout(() => process.exit(1), 20000);
   deadline.unref();
@@ -458,6 +474,7 @@ export async function shutdown(exit = false) {
     [...sessions.keys()].map((id) => endCall(id, "failed", "SERVER_RESTART")),
   );
   wss.close();
+  await billingRun;
   await closeDatabase();
   await workerLock.end();
   clearTimeout(deadline);

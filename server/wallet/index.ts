@@ -115,6 +115,14 @@ export async function credit(
   await entry(tx, wallet, "PURCHASE", amount, amount, 0n, ref);
   return wallet.id;
 }
+export async function adjustPayment(
+  tx: PoolClient, wallet: Wallet, delta: bigint, paymentId: string, revision: string,
+) {
+  if (delta === 0n) return;
+  await entry(tx, wallet, "ADJUSTMENT", delta < 0n ? -delta : delta, delta, 0n, {
+    type: "payment_reversal", id: paymentId, key: `reversal:${paymentId}:${revision}`,
+  });
+}
 export async function reserve(
   tx: PoolClient,
   walletId: string,

@@ -46,7 +46,7 @@ Un rollback de código no deshace migraciones SQL ni movimientos de saldo. Compr
 | `INVALID_ORIGIN` en la web | `APP_BASE_URL`, Host y origen exactos | Usar el dominio canónico, incluido `www` cuando corresponda |
 | `NOT_CONFIGURED` | Flags, variables de telefonía y origen HTTPS | Revisar `readiness.checks`; presencia no garantiza validez de credenciales |
 | `RECOVERY_PENDING` | `provider_calls` pendientes de una llamada terminal | Confirmar el estado del proveedor y permitir recuperación; no borrar registros para habilitar llamadas |
-| `BILLING_NOT_CONFIGURED` | Clave de prueba, firma y tres Price IDs | Completar la configuración de [Stripe](BILLING.md) sin quitar la protección de modo test |
+| `BILLING_NOT_CONFIGURED` | Modo live/test, clave restringida, firma y tres Price IDs | Completar la configuración de [Stripe](BILLING.md) con claves, objetos y base del mismo entorno |
 | `INSUFFICIENT_CREDIT` | Saldo disponible, reservado y tarifa | Revisar recarga o reserva pendiente; no editar saldos directamente |
 | Llamada finalizada con cargo pendiente | Eventos de respuesta/cuelgue y evidencia del proveedor | Ejecutar informe de conciliación y seguir [BILLING](BILLING.md) |
 

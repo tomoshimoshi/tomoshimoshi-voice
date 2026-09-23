@@ -11,6 +11,11 @@ export async function authorizeCall(
 ) {
   const pricing = await activePricing(tx);
   const wallet = await lockWallet(tx, userId, pricing.currency);
+  const review = await tx.query(
+    `SELECT 1 FROM payment_reversals r JOIN payments p ON p.id=r.payment_id
+     WHERE p.user_id=$1 AND r.required_amount>r.debited_amount LIMIT 1`, [userId],
+  );
+  if (review.rows.length) throw new Error("PAYMENT_REVIEW_REQUIRED");
   const amount = BigInt(wallet.available_balance);
   const affordable = affordableSeconds(amount, BigInt(pricing.rate_per_minute));
   // Telnyx's carrier-side limit has a 30-second minimum. Never round up the budget.

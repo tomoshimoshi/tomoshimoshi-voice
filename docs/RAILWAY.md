@@ -65,11 +65,12 @@ Configurar secretos en Variables de Railway, nunca en Git ni en el navegador.
 | `ALLOWED_PHONE_NUMBERS` | Destinos autorizados existentes; `*` permite los países habilitados por la aplicación. |
 | `LIVE_CALLS_ENABLED` | `false` durante la configuración; `true` al probar telefonía. |
 | `MAX_CALL_SECONDS` | Conservar el límite elegido; por defecto 600. |
-| `STRIPE_SECRET_KEY` | Clave **de prueba** `sk_test_…`; esta versión rechaza modo live. |
+| `STRIPE_MODE` | `live` en producción; `test` únicamente con base y claves aisladas. |
+| `STRIPE_SECRET_KEY` | Clave restringida **live** `rk_live_…` con los permisos indicados en BILLING.md. |
 | `STRIPE_WEBHOOK_SECRET` | Secreto del nuevo endpoint HTTPS; no reutilizar el de `stripe listen`. |
-| `STRIPE_PRICE_CREDIT_1000` | Price de prueba existente de ¥1.000. |
-| `STRIPE_PRICE_CREDIT_2000` | Price de prueba existente de ¥2.000. |
-| `STRIPE_PRICE_CREDIT_5000` | Price de prueba existente de ¥5.000. |
+| `STRIPE_PRICE_CREDIT_1000` | Price live existente de ¥1.000. |
+| `STRIPE_PRICE_CREDIT_2000` | Price live existente de ¥2.000. |
+| `STRIPE_PRICE_CREDIT_5000` | Price live existente de ¥5.000. |
 | `GOOGLE_MAPS_BROWSER_KEY` | Opcional, clave de navegador restringida a los dominios autorizados de la web. |
 | `GOOGLE_MAPS_MAP_ID` | Opcional, ID de mapa existente. |
 
@@ -78,8 +79,8 @@ No sobreescribirlos con valores locales ni fijar `VOICE_PORT`: Railway proporcio
 `PORT`, que tiene prioridad. Railway no necesita los secretos de Auth0.
 
 Las migraciones no se ejecutan automáticamente al construir o arrancar la imagen.
-Verificar que Neon tiene aplicadas las migraciones del repositorio, incluida
-`003_billing.sql`. Si falta alguna, ejecutar `npm run db:migrate` con la conexión
+Verificar que Neon tiene aplicadas las migraciones del repositorio, incluidas
+`003_billing.sql` y `004_live_payments.sql`. Si falta alguna, ejecutar `npm run db:migrate` con la conexión
 directa en mantenimiento antes de arrancar el worker. No volver a importar SQLite.
 Ver [PostgreSQL](POSTGRESQL.md) y [facturación](BILLING.md).
 
@@ -104,7 +105,7 @@ de Vercel a la base/worker de producción.
 - Telnyx: configurar el webhook v2 como
   `https://DOMINIO-RAILWAY/webhooks/telnyx`. El código también envía esa URL al
   marcar y genera `wss://DOMINIO-RAILWAY/media/…` desde `PUBLIC_BASE_URL`.
-- Stripe: configurar un endpoint **de prueba** en
+- Stripe: configurar un endpoint **live** en
   `https://DOMINIO-RAILWAY/webhooks/stripe` con los eventos de [BILLING](BILLING.md).
   Guardar su secreto de firma en Railway. Retirar el antiguo destino ngrok cuando
   el nuevo esté verificado. Los endpoints están en el worker, no en `/api` de Vercel.
@@ -144,7 +145,7 @@ credenciales separadas.
 1. `/healthz` responde 200; `/state` sin credenciales responde 401.
 2. Iniciar sesión en la web y comprobar perfil, contactos, historial y saldo.
    Las peticiones autenticadas al proxy ya no deben devolver 503.
-3. Verificar una recarga de Stripe en modo prueba y la recepción de su webhook.
+3. Verificar Checkout live y la firma del webhook. La aceptación con dinero real requiere una compra controlada por el titular; nunca usar tarjetas de prueba en live.
 4. Con telefonía habilitada y un número de prueba autorizado, comprobar una
    llamada corta: audio en ambos sentidos, transcripción, respuesta desde la web
    y cancelación. Revisar el resultado guardado y que el proveedor haya colgado.

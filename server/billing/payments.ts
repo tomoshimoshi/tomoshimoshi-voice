@@ -27,8 +27,11 @@ export async function checkout(
   const payment = await transaction(async (tx) => {
     // Serialize duplicate checkout requests for the same account/key.
     await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [userId]);
+    if ((await tx.query(`SELECT 1 FROM payment_reversals r JOIN payments p ON p.id=r.payment_id
+      WHERE p.user_id=$1 AND r.required_amount>r.debited_amount LIMIT 1`, [userId])).rows.length)
+      throw new Error("PAYMENT_REVIEW_REQUIRED");
     await tx.query(
-      `INSERT INTO payments(id,user_id,provider,provider_price_id,amount,currency,package_code,request_key) VALUES($1,$2,'stripe',$3,$4,'JPY',$5,$6) ON CONFLICT(user_id,request_key) DO NOTHING`,
+      `INSERT INTO payments(id,user_id,provider,provider_price_id,amount,currency,package_code,request_key,livemode) VALUES($1,$2,'stripe',$3,$4,'JPY',$5,$6,$7) ON CONFLICT(user_id,request_key) DO NOTHING`,
       [
         randomUUID(),
         userId,
@@ -36,6 +39,7 @@ export async function checkout(
         pack.amount.toString(),
         code,
         key,
+        config.livemode,
       ],
     );
     const row = (
@@ -45,6 +49,7 @@ export async function checkout(
       )
     ).rows[0] as Payment;
     if (row.package_code !== code) throw new Error("IDEMPOTENCY_CONFLICT");
+    if (row.livemode !== config.livemode) throw new Error("PAYMENT_MISMATCH");
     if (
       row.status !== "pending" ||
       Date.now() - new Date(row.created_at).getTime() >= 30 * 60 * 1000
@@ -78,7 +83,7 @@ export async function processStripeEvent(
   event: Stripe.Event,
   provider: PaymentProvider = stripeProvider,
 ) {
-  if (event.livemode) throw new Error("PAYMENT_MISMATCH");
+  if (event.livemode !== stripeConfig().livemode) throw new Error("PAYMENT_MISMATCH");
   if (
     (
       await database().query(
@@ -120,6 +125,7 @@ export async function processStripeEvent(
     if (!supported.has(event.type)) return "ignored";
     if (
       !payment ||
+      payment.livemode !== event.livemode ||
       payment.provider !== "stripe" ||
       (payment.provider_session_id &&
         payment.provider_session_id !== session.id) ||
@@ -198,18 +204,21 @@ export async function processStripeEvent(
     billingLog("wallet.credited", { paymentId: session.metadata!.payment_id });
 }
 export async function walletSummary(userId: string) {
-  const [result, pricing] = await Promise.all([
+  const [result, pricing, review] = await Promise.all([
     database().query(
       "SELECT available_balance::text,reserved_balance::text FROM wallets WHERE user_id=$1 AND currency='JPY'",
       [userId],
     ),
     activePricing(),
+    database().query(`SELECT 1 FROM payment_reversals r JOIN payments p ON p.id=r.payment_id
+      WHERE p.user_id=$1 AND r.required_amount>r.debited_amount LIMIT 1`, [userId]),
   ]);
   const available = result.rows[0]?.available_balance || "0",
     reserved = result.rows[0]?.reserved_balance || "0";
   const rate = BigInt(pricing.rate_per_minute);
   return {
     currency: "JPY",
+    paymentReviewRequired: review.rows.length > 0,
     available,
     reserved,
     pricing: { id: pricing.id, ratePerMinute: pricing.rate_per_minute },

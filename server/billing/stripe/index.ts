@@ -22,7 +22,7 @@ export function stripeAdapter(stripe: Stripe): PaymentProvider {
       const config = stripeConfig();
       const price = await stripe.prices.retrieve(payment.provider_price_id);
       if (
-        price.livemode ||
+        price.livemode !== config.livemode ||
         !price.active ||
         price.type !== "one_time" ||
         price.currency !== "jpy" ||
@@ -39,6 +39,10 @@ export function stripeAdapter(stripe: Stripe): PaymentProvider {
       const session = await stripe.checkout.sessions.create(
         {
           mode: "payment",
+          adaptive_pricing: { enabled: false },
+          custom_text: {
+            submit: { message: `Prepaid JPY credit. No expiry or subscription. No voluntary refunds; billing errors and statutory rights excepted. Terms: ${config.origin}/terms · Sales: ${config.origin}/commerce` },
+          },
           integration_identifier: "tomoshimoshi_credits_qmzpavhk",
           line_items: [{ price: payment.provider_price_id, quantity: 1 }],
           client_reference_id: payment.id,
@@ -51,7 +55,7 @@ export function stripeAdapter(stripe: Stripe): PaymentProvider {
         },
         { idempotencyKey: `checkout:${payment.id}` },
       );
-      if (!session.url || session.livemode)
+      if (!session.url || session.livemode !== config.livemode)
         throw new Error("CHECKOUT_UNAVAILABLE");
       const url = new URL(session.url);
       if (url.protocol !== "https:" || url.hostname !== "checkout.stripe.com")
@@ -59,6 +63,7 @@ export function stripeAdapter(stripe: Stripe): PaymentProvider {
       return { id: session.id, url: session.url };
     },
     async confirmation(sessionId) {
+      const { livemode } = stripeConfig();
       const session = await stripe.checkout.sessions.retrieve(sessionId, {
         expand: ["payment_intent", "line_items.data.price"],
       });
@@ -67,16 +72,18 @@ export function stripeAdapter(stripe: Stripe): PaymentProvider {
       const line = lines?.data[0],
         price = line?.price;
       if (
-        session.livemode ||
+        session.livemode !== livemode ||
         session.mode !== "payment" ||
         !lines ||
         lines.has_more ||
         lines.data.length !== 1 ||
         !price ||
+        price.livemode !== livemode ||
+        price.currency !== "jpy" ||
         price.type !== "one_time" ||
         !intent ||
         typeof intent === "string" ||
-        intent.livemode
+        intent.livemode !== livemode
       )
         throw new Error("PAYMENT_MISMATCH");
       const definition = packageDefinition(

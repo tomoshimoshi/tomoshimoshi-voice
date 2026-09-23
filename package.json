@@ -19,6 +19,7 @@
     "db:migrate": "node --import tsx scripts/migrate.ts",
     "db:import-sqlite": "node --import tsx scripts/import-sqlite.ts",
     "billing:reconcile": "node --import tsx scripts/reconcile-billing.ts",
+    "check:billing": "node --import tsx scripts/check-billing.ts",
     "test:billing:postgres": "node --import tsx --test tests/integration/billing-postgres.test.ts"
   },
   "dependencies": {

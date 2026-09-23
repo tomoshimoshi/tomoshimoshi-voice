@@ -16,7 +16,7 @@ The existing modular monolith is retained: Auth0 → Next.js authenticated/origi
 
 Each payment is unique by provider payment ID and provider Checkout Session ID. Requests are unique by user/idempotency key. Stripe event IDs are retained permanently; they do not use the telephony webhook table's one-day retention. A paid event locks the payment and commits its success, one PURCHASE ledger entry, wallet update, and domain events together. Duplicates are successful no-ops. Failures roll back even the event receipt so Stripe can retry. Different successful events for the same payment cannot credit twice. Delayed failures/expiration cannot downgrade a successful payment.
 
-The adapter verifies signatures over the raw body, retrieves the Session with its PaymentIntent and line items, and validates test mode, paid/succeeded state, JPY, exact received amount, quantity one, one-time Price ID, and internal user/payment/package correlation. It compares with the immutable internal payment and package definitions. No products are created or found by name. Each Checkout request has a stable internal idempotency key; retries after an uncertain response reuse it. An old request is rejected after 30 minutes rather than risking a second Session after Stripe's idempotency retention ends.
+The adapter verifies signatures over the raw body, retrieves the Session with its PaymentIntent and line items, and validates the configured live/test mode, paid/succeeded state, JPY, exact received amount, quantity one, one-time Price ID, and internal user/payment/package correlation. It compares with the immutable internal payment and package definitions. No products are created or found by name. Each Checkout request has a stable internal idempotency key; retries after an uncertain response reuse it. An old request is rejected after 30 minutes rather than risking a second Session after Stripe's idempotency retention ends.
 
 The outbox persists `wallet.credited/reserved/captured/released/refunded`, `payment.succeeded`, and `call.charged` in the state-changing transaction. There is currently no consumer; rows deliberately remain unprocessed for future workers. Do not mark them delivered or delete them as a substitute for an actual durable consumer. Safe correlation logs accompany checkout, payment and call settlement. Never log secrets, provider response bodies, payment details or transcripts.
 
@@ -44,7 +44,7 @@ Run the read-only report regularly with your current scheduler/operating procedu
 npm run billing:reconcile
 ```
 
-It reports ledger/projection/reservation mismatches, overdue calls, old pending payments and retained outbox count. It returns nonzero when action is needed. Never repair history by editing/deleting ledger rows or resetting wallet balances. Usage refunds are new REFUND entries tied to the original CAPTURE, limited to its unrefunded amount. Cash refunds, chargebacks and account deletion require an explicit operational policy before live rollout; this release exposes no withdrawal/refund HTTP endpoint.
+It reports ledger/projection/reservation mismatches, overdue calls, old pending payments and retained outbox count. It returns nonzero when action is needed. Never repair history by editing/deleting ledger rows or resetting wallet balances. Usage refunds are new REFUND entries tied to the original CAPTURE, limited to its unrefunded amount. Cash refunds are issued by an authorized operator in Stripe after review. There is no voluntary refund policy; billing errors and mandatory legal rights are excepted. The application exposes no public refund/withdrawal endpoint. See refund/dispute reconciliation below.
 
 Prefer replaying the original signed provider events. If events are unavailable, an authorized operator must obtain actual answer/end timestamps from carrier records, confirm the leg is inactive, and record a support/CDR reference (no transcript or payment-method data):
 
@@ -56,21 +56,22 @@ npm run billing:reconcile -- --call CALL_UUID \
 
 For a confirmed unanswered call use `--unconnected` instead of `--connected`. The command requires the app call to be terminal and verifies known carrier legs are inactive through Telnyx. If a dial response was lost and no leg ID was recorded, first confirm in the carrier account that **no leg exists**, wait past the call limit plus five minutes, and explicitly add `--verified-no-leg --unconnected` with the evidence reference. This is a privileged operator assertion, never an automatic expiry or browser operation. Reconciliation uses the same idempotent settlement transaction; completed charges cannot be rewritten. If a correction is needed, issue a documented compensating ledger operation.
 
-## Stripe test configuration
+## Stripe environment configuration
 
-The release explicitly accepts only `sk_test_` secret keys and rejects live-mode objects. It does not create Stripe resources. Configure these in the **voice server's** environment:
+Set `STRIPE_MODE=live` in production and `test` only with a separate sandbox database. If omitted, NODE_ENV=production defaults to live; other environments default to test. The secret/restricted key, Price, Session, PaymentIntent, line-item Price, webhook event and immutable internal payment must agree on mode. Existing pre-migration payments remain test records. The service does not create products or prices. Configure these in the **voice server's** environment:
 
 | Variable | Value |
 | --- | --- |
-| `STRIPE_SECRET_KEY` | Existing test secret key (`sk_test_…`) |
-| `STRIPE_PUBLISHABLE_KEY` | Existing test publishable key; currently unused by hosted Checkout |
+| `STRIPE_MODE` | `live` or `test` |
+| `STRIPE_SECRET_KEY` | Restricted key (`rk_live_…` / `rk_test_…`), or matching secret key |
+
 | `STRIPE_WEBHOOK_SECRET` | Endpoint-specific `whsec_…` signing secret |
 | `STRIPE_PRICE_CREDIT_1000` | Existing active one-time JPY ¥1,000 `price_…` ID |
 | `STRIPE_PRICE_CREDIT_2000` | Existing active one-time JPY ¥2,000 `price_…` ID |
 | `STRIPE_PRICE_CREDIT_5000` | Existing active one-time JPY ¥5,000 `price_…` ID |
 | `APP_BASE_URL` | Exact web origin, e.g. `http://localhost:3000` locally; HTTPS when hosted |
 
-In Stripe's test/sandbox Dashboard, open each existing product, open its one-time price, and copy the **Price ID**, not the product ID. Check currency JPY and amount. Do not add duplicate products. All three Price IDs must differ. The server checks the price before creating a Session. Missing/invalid required configuration produces a useful server-side configuration error naming the variable, and a safe localized availability message to the user. Publishable key is optional because redirect Checkout does not use it; neither secret key nor webhook secret is exposed to Next.js client components.
+In the matching Stripe live or sandbox Dashboard, open each existing product, open its one-time price, and copy the **Price ID**, not the product ID. Check currency JPY and amount. Do not add duplicate products. All three Price IDs must differ. The server checks the price before creating a Session. Missing/invalid required configuration produces a useful server-side configuration error naming the variable, and a safe localized availability message to the user. Publishable key is optional because redirect Checkout does not use it; neither secret key nor webhook secret is exposed to Next.js client components.
 
 Apply the new migration through the existing tool to your development/staging database; review it and use your normal backup/deployment procedure for production:
 
@@ -129,3 +130,26 @@ References: [Stripe webhook signatures/retries](https://docs.stripe.com/webhooks
 ### Historical verification before repository separation (2026-09-22)
 
 Before the repository split, the automated suite and web production build were run locally. Native PostgreSQL tests used a disposable loopback instance, not the application's database. Browser checks used the real Next.js → authenticated application API → migrated disposable PostgreSQL-compatible database flow, with a fake Stripe provider and test signing secret. Desktop and 390×844 Spanish layouts had no horizontal overflow or framework errors. A pending return kept ¥0 available; a synthetic signed paid webhook changed it to ¥1,000; replay returned HTTP 200 and left the balance at ¥1,000. The checkout-failure state was also verified. No real telephone call, live Stripe API request, hosted test-card payment, or production migration was performed. A real hosted Stripe test Checkout remains an operator acceptance step after configuring the endpoint signing secret.
+
+
+## Live readiness and restricted-key permissions
+
+The application key needs Checkout Sessions **write/read**, Prices **read**, PaymentIntents **read**, Charges **read** (refund event correlation fallback), Refunds **read**, and Disputes **read**. It does not need permission to create cash refunds. Keep keys only in the voice service secret environment; the web never needs a Stripe private or publishable key. Never put keys in logs or Git.
+
+After applying migration 004, run `npm run check:billing` against the intended environment. This read-only preflight validates exact prices, read permissions, schema and wallets with credit from the other mode. It does not prove Checkout write permission, webhook secret matching or an actual card payment. Review any historical test-funded wallets before enabling live purchases; never delete or rewrite ledger history.
+
+Production webhook: `https://voice-production-53b8.up.railway.app/webhooks/stripe`. Subscribe to:
+
+- `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`.
+- `charge.refunded`, `refund.created`, `refund.updated`, `refund.failed`.
+- `charge.dispute.created`, `charge.dispute.updated`, `charge.dispute.closed`, `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`.
+
+Use the endpoint-specific signing secret. Update the live endpoint only when the new worker/configuration are ready. No redirects or authentication proxy may sit in front of this route. Hosted Checkout stays in JPY (adaptive pricing is disabled) so settlement and purchased credit use the same exact amount. No automatic tax is enabled: displayed package amounts remain the total charged. Confirm fiscal treatment separately before changing tax behavior.
+
+## Refunds, disputes and missing webhooks
+
+The user-approved policy is no voluntary refunds, with exceptions for billing errors and statutory rights. Operators review requests at contact@tomoshimoshi.com and issue approved refunds in Stripe to the original payment method. Do not issue a second refund for a disputed charge without reviewing its state in Stripe.
+
+The worker retrieves current Stripe refunds/disputes under a per-payment lock. Pending/succeeded refunds and open/lost disputes remove the corresponding available credit through immutable ADJUSTMENT entries, capped at the original purchase. Failed/cancelled refunds and won/closed-warning disputes restore only previously removed credit. Duplicate and out-of-order events converge to current Stripe state. Reserved funds are never seized and balances never become negative. If credit was already spent or reserved, the outstanding shortfall blocks new calls and checkouts and shows a support message. This does not automatically charge the customer or forgive debt; support must resolve actual spent-credit cases individually. A reserved amount released after an unanswered call is reconciled in the next cycle.
+
+Every minute the single worker reconciles up to 50 pending sessions and 20 succeeded purchases, including purchases with no refund/dispute webhook. Each batch rotates by last-check time. The owner-scoped payment return endpoint also recovers confirmed pending payments; it never trusts the redirect as payment evidence. Startup/shutdown preserves the existing single-worker lock. Run `npm run billing:reconcile -- --payments` for an explicit recovery pass plus the read-only report. The report includes reversal shortfalls; plain `billing:reconcile` remains read-only. Watch `payment.reconciliation_failed`, `payment.reversal_reconciliation_failed`, `payment.reconciliation_unavailable` and `payment.reversal_shortfall` logs and investigate Stripe deliveries promptly. An exhausted batch or failed permission check is not proof that all payments have been reconciled.

@@ -11,6 +11,7 @@ export type Payment = {
   status: string;
   checkout_url: string | null;
   created_at: Date;
+  livemode: boolean;
 };
 export type PaymentConfirmation = {
   sessionId: string;

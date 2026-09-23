@@ -29,6 +29,7 @@ import type {
 } from "../server/billing/provider";
 import type { Call } from "../lib/types";
 Object.assign(process.env, {
+  STRIPE_MODE: "test",
   STRIPE_SECRET_KEY: "sk_test_fixture",
   STRIPE_WEBHOOK_SECRET: "whsec_fixture",
   STRIPE_PRICE_CREDIT_1000: "price_1000",
@@ -267,7 +268,7 @@ test("missing configuration and live keys fail clearly; browser cannot choose fi
   const secret = process.env.STRIPE_SECRET_KEY;
   process.env.STRIPE_SECRET_KEY = "sk_live_prohibited";
   try {
-    assert.throws(stripeConfig, /sk_test_/);
+    assert.throws(stripeConfig, /test secret or restricted key/);
   } finally {
     process.env.STRIPE_SECRET_KEY = secret;
   }
@@ -615,7 +616,7 @@ test("Stripe adapter validates actual received money and expanded one-time line 
         {
           quantity: 1,
           amount_total: 1000,
-          price: { id: "price_1000", type: "one_time", unit_amount: 1000 },
+          price: { id: "price_1000", type: "one_time", unit_amount: 1000, livemode: false, currency: "jpy" },
         },
       ],
     },
@@ -704,4 +705,184 @@ test("call settlement failure preserves the complete reservation and retries onc
   await observeCallEvent(e);
   assert.equal((await balance(userId)).available, "875");
   assert.equal((await balance(userId)).reserved, "0");
+});
+
+test("live restricted keys accept only live objects and credit each package once", async () => {
+  const saved = { mode: process.env.STRIPE_MODE, key: process.env.STRIPE_SECRET_KEY, origin: process.env.APP_BASE_URL };
+  Object.assign(process.env, { STRIPE_MODE: "live", STRIPE_SECRET_KEY: "rk_live_fixture", APP_BASE_URL: "https://www.example.test" });
+  try {
+    assert.equal(stripeConfig().livemode, true);
+    for (const amount of [1000, 2000, 5000] as const) {
+      const id = await user();
+      const purchase = await checkout(id, `credit_${amount}`, randomUUID(), provider);
+      const paid = event(purchase.paymentId);
+      await assert.rejects(processStripeEvent(paid, provider), /PAYMENT_MISMATCH/);
+      paid.livemode = true;
+      await processStripeEvent(paid, provider);
+      await processStripeEvent(paid, provider);
+      assert.equal((await balance(id)).available, String(amount));
+      assert.equal((await testDatabase.query<{ livemode: boolean }>("SELECT livemode FROM payments WHERE id=$1", [purchase.paymentId])).rows[0].livemode, true);
+      await assert.rejects(testDatabase.query("UPDATE payments SET livemode=false WHERE id=$1", [purchase.paymentId]), /immutable/);
+    }
+    process.env.STRIPE_SECRET_KEY = "rk_test_fixture";
+    assert.throws(stripeConfig, /live secret or restricted/);
+    process.env.STRIPE_SECRET_KEY = "rk_live_fixture";
+    process.env.APP_BASE_URL = "http://localhost:3000";
+    assert.throws(stripeConfig, /HTTPS/);
+  } finally {
+    Object.assign(process.env, { STRIPE_MODE: saved.mode, STRIPE_SECRET_KEY: saved.key, APP_BASE_URL: saved.origin });
+  }
+});
+
+test("production defaults to live and nonproduction can explicitly use restricted test keys", () => {
+  const oldNode = process.env.NODE_ENV;
+  const oldKey = process.env.STRIPE_SECRET_KEY;
+  delete process.env.STRIPE_MODE;
+  process.env.NODE_ENV = "production";
+  try { assert.throws(stripeConfig, /live secret or restricted/); }
+  finally {
+    if (oldNode === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = oldNode;
+    process.env.STRIPE_MODE = "test";
+  }
+  process.env.STRIPE_SECRET_KEY = "rk_test_fixture";
+  try { assert.equal(stripeConfig().livemode, false); }
+  finally { process.env.STRIPE_SECRET_KEY = oldKey; }
+});
+
+test("live SDK adapter rejects test prices, sessions, intents and line-item prices", async () => {
+  const saved = { key: process.env.STRIPE_SECRET_KEY, origin: process.env.APP_BASE_URL };
+  Object.assign(process.env, { STRIPE_MODE: "live", STRIPE_SECRET_KEY: "rk_live_fixture", APP_BASE_URL: "https://www.example.test" });
+  try {
+    const id = await user();
+    let priceMode = false, sessionMode = true;
+    const sdk = new Stripe("rk_live_fixture", { httpClient: Stripe.createFetchHttpClient(async url => {
+      if (String(url).includes("/prices/")) return Response.json({ livemode: priceMode, active: true, type: "one_time", currency: "jpy", unit_amount: 1000 });
+      return Response.json({ id: "cs_live_fixture", livemode: sessionMode, url: "https://checkout.stripe.com/c/pay/fixture" });
+    }) });
+    await assert.rejects(checkout(id, "credit_1000", randomUUID(), stripeAdapter(sdk)), /CHECKOUT_UNAVAILABLE/);
+    priceMode = true; sessionMode = false;
+    await assert.rejects(checkout(id, "credit_1000", randomUUID(), stripeAdapter(sdk)), /CHECKOUT_UNAVAILABLE/);
+    sessionMode = true;
+    assert.match((await checkout(id, "credit_1000", randomUUID(), stripeAdapter(sdk))).url, /^https:\/\/checkout.stripe.com/);
+  } finally { Object.assign(process.env, { STRIPE_MODE: "test", STRIPE_SECRET_KEY: saved.key, APP_BASE_URL: saved.origin }); }
+});
+
+test("partial/full refunds, duplicate delivery and a won dispute reconcile without changing purchase history", async () => {
+  const { reconcileReversal } = await import("../server/billing/reversals");
+  const id = await user();
+  const p = await checkout(id, "credit_1000", randomUUID(), provider);
+  await processStripeEvent(event(p.paymentId), provider);
+  let amount = 400n;
+  const snapshot = async () => ({ amount, currency: "jpy", livemode: false });
+  await Promise.all([reconcileReversal(p.paymentId, snapshot), reconcileReversal(p.paymentId, snapshot)]);
+  assert.equal((await balance(id)).available, "600");
+  amount = 1000n; // Full dispute/refund holds the rest.
+  await reconcileReversal(p.paymentId, snapshot);
+  assert.equal((await balance(id)).available, "0");
+  amount = 400n; // Dispute won; retain the actual refund only.
+  await reconcileReversal(p.paymentId, snapshot);
+  await reconcileReversal(p.paymentId, snapshot);
+  assert.equal((await balance(id)).available, "600");
+  await processStripeEvent(event(p.paymentId), provider);
+  assert.equal((await balance(id)).available, "600");
+  assert.equal((await paymentStatus(id, p.paymentId)).status, "succeeded");
+  const entries = await testDatabase.query("SELECT * FROM wallet_ledger WHERE reference_type='payment_reversal' AND reference_id=$1", [p.paymentId]);
+  assert.equal(entries.rows.length, 3);
+});
+
+test("a refund during a call preserves reserved money and blocks new calls until reconciliation", async () => {
+  const { reconcileReversal } = await import("../server/billing/reversals");
+  const id = await user();
+  const p = await checkout(id, "credit_1000", randomUUID(), provider);
+  await processStripeEvent(event(p.paymentId), provider);
+  const c = call();
+  await reserveCall(c, id, randomUUID());
+  const snapshot = async () => ({ amount: 1000n, currency: "jpy", livemode: false });
+  await reconcileReversal(p.paymentId, snapshot);
+  assert.equal((await balance(id)).reserved, "1000");
+  assert.equal((await balance(id)).paymentReviewRequired, true);
+  await assert.rejects(checkout(id, "credit_1000", randomUUID(), provider), /PAYMENT_REVIEW_REQUIRED/);
+  const { authorizeCall } = await import("../server/calls/billing");
+  await assert.rejects(transaction(tx => authorizeCall(tx, randomUUID(), id)), /PAYMENT_REVIEW_REQUIRED/);
+  await observeCallEvent({ callId: c.id, eventId: randomUUID(), type: "call.hangup", at: new Date().toISOString(), cause: "no_answer", controlId: "fixture" });
+  await reconcileReversal(p.paymentId, snapshot);
+  assert.equal((await balance(id)).reserved, "0");
+  assert.equal((await balance(id)).available, "0");
+  assert.equal((await balance(id)).paymentReviewRequired, false);
+});
+
+test("reversal rejects wrong mode, currency and excessive amounts without altering credit", async () => {
+  const { reconcileReversal } = await import("../server/billing/reversals");
+  const id = await user();
+  const p = await checkout(id, "credit_1000", randomUUID(), provider);
+  await processStripeEvent(event(p.paymentId), provider);
+  for (const snapshot of [
+    { amount: 1001n, currency: "jpy", livemode: false },
+    { amount: 1000n, currency: "usd", livemode: false },
+    { amount: 1000n, currency: "jpy", livemode: true },
+  ]) await assert.rejects(reconcileReversal(p.paymentId, async () => snapshot), /PAYMENT_MISMATCH/);
+  assert.equal((await balance(id)).available, "1000");
+});
+
+test("refund failure rolls back the ledger and reversal projection together", async () => {
+  const { reconcileReversal } = await import("../server/billing/reversals");
+  const id = await user();
+  const p = await checkout(id, "credit_1000", randomUUID(), provider);
+  await processStripeEvent(event(p.paymentId), provider);
+  await testDatabase.exec("CREATE FUNCTION fail_reversal_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected reversal failure'; END $$; CREATE TRIGGER fail_reversal_test BEFORE INSERT ON payment_reversals FOR EACH ROW EXECUTE FUNCTION fail_reversal_test();");
+  const snapshot = async () => ({ amount: 1000n, currency: "jpy", livemode: false });
+  try { await assert.rejects(reconcileReversal(p.paymentId, snapshot), /injected reversal failure/); }
+  finally { await testDatabase.exec("DROP TRIGGER fail_reversal_test ON payment_reversals; DROP FUNCTION fail_reversal_test();"); }
+  assert.equal((await balance(id)).available, "1000");
+  await reconcileReversal(p.paymentId, snapshot);
+  assert.equal((await balance(id)).available, "0");
+});
+
+test("return-page reconciliation verifies Stripe and recovers a missing webhook exactly once", async () => {
+  const { reconcilePayment } = await import("../server/billing/reconcile");
+  const id = await user();
+  const p = await checkout(id, "credit_1000", randomUUID(), provider);
+  const confirmation = confirmations.get(`cs_test_${p.paymentId}`)!;
+  const metadata = confirmation.metadata;
+  let requests = 0;
+  const session = {
+    id: confirmation.sessionId, livemode: false, status: "complete", mode: "payment", payment_status: "paid",
+    amount_total: 1000, currency: "jpy", metadata, client_reference_id: p.paymentId,
+    payment_intent: { id: confirmation.paymentId, livemode: false, status: "succeeded", amount_received: 1000, currency: "jpy", metadata },
+    line_items: { has_more: false, data: [{ quantity: 1, amount_total: 1000, price: { id: "price_1000", type: "one_time", unit_amount: 1000, currency: "jpy", livemode: false } }] },
+  };
+  const sdk = new Stripe("sk_test_fixture", { httpClient: Stripe.createFetchHttpClient(async () => { requests++; return Response.json(session); }) });
+  await reconcilePayment(p.paymentId, await user(), sdk);
+  assert.equal(requests, 0); // Owner scoping precedes Stripe access.
+  session.payment_status = "unpaid";
+  await reconcilePayment(p.paymentId, id, sdk);
+  assert.equal((await balance(id)).available, "0");
+  session.payment_status = "paid";
+  await reconcilePayment(p.paymentId, id, sdk);
+  assert.equal((await balance(id)).available, "1000");
+  await processStripeEvent(event(p.paymentId), provider);
+  await reconcilePayment(p.paymentId, id, sdk);
+  assert.equal((await balance(id)).available, "1000");
+});
+
+test("Stripe reversal snapshot ignores failed refunds and won disputes and caps overlapping reversals", async () => {
+  const { reversalSnapshot } = await import("../server/billing/reversals");
+  const id = await user();
+  const p = await checkout(id, "credit_1000", randomUUID(), provider);
+  await processStripeEvent(event(p.paymentId), provider);
+  const payment = (await testDatabase.query("SELECT * FROM payments WHERE id=$1", [p.paymentId])).rows[0];
+  const refunds = [{ id: "re_1", amount: 100, status: "succeeded" }, { id: "re_2", amount: 900, status: "failed" }];
+  const disputes = [{ id: "dp_1", amount: 1000, status: "won" }];
+  const sdk = new Stripe("sk_test_fixture", { httpClient: Stripe.createFetchHttpClient(async url => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/v1/refunds") return Response.json({ object: "list", data: refunds, has_more: false });
+    if (path === "/v1/disputes") return Response.json({ object: "list", data: disputes, has_more: false });
+    return Response.json({ metadata: { payment_id: p.paymentId, user_id: id }, amount_received: 1000, currency: "jpy", livemode: false });
+  }) });
+  assert.equal((await reversalSnapshot(payment as never, sdk)).amount, 100n);
+  disputes[0].status = "needs_response";
+  assert.equal((await reversalSnapshot(payment as never, sdk)).amount, 1000n);
+  disputes[0].status = "won";
+  refunds[0].status = "canceled";
+  assert.equal((await reversalSnapshot(payment as never, sdk)).amount, 0n);
 });

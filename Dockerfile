@@ -11,7 +11,7 @@ COPY tsconfig.json ./
 COPY server ./server
 COPY lib ./lib
 COPY db/migrations ./db/migrations
-COPY scripts/migrate.ts scripts/reconcile-billing.ts ./scripts/
+COPY scripts/migrate.ts scripts/reconcile-billing.ts scripts/check-billing.ts ./scripts/
 
 USER node
 # Direct Node entrypoint delivers SIGTERM to the worker for graceful shutdown.

@@ -50,6 +50,7 @@ url.searchParams.set("options", `-csearch_path=${schema}`);
 process.env.DATABASE_URL = url.toString();
 process.env.DATABASE_URL_POOLED = "";
 Object.assign(process.env, {
+  STRIPE_MODE: "test",
   STRIPE_SECRET_KEY: "sk_test_fixture",
   STRIPE_WEBHOOK_SECRET: "whsec_fixture",
   STRIPE_PRICE_CREDIT_1000: "price_1000",

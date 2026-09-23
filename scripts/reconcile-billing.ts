@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 import { database, closeDatabase } from "../server/database";
 import { reconcileCall } from "../server/calls/billing";
+import { reconcilePayments } from "../server/billing/reconcile";
 const { values } = parseArgs({
   options: {
     call: { type: "string" },
@@ -11,9 +12,12 @@ const { values } = parseArgs({
     unconnected: { type: "boolean" },
     evidence: { type: "string" },
     "verified-no-leg": { type: "boolean" },
+    payments: { type: "boolean" },
   },
 });
 try {
+  if (values.payments && values.call) throw new Error("Use --payments or --call separately");
+  if (values.payments) await reconcilePayments();
   if (values.call) {
     const id = z.uuid().parse(values.call);
     const end = z.iso.datetime({ offset: true }).parse(values.ended);
@@ -90,19 +94,24 @@ try {
     const outbox = await database().query(
       "SELECT count(*)::text AS unprocessed FROM outbox_events WHERE processed_at IS NULL",
     );
+    const reversals = await database().query(
+      `SELECT payment_id,required_amount::text,debited_amount::text FROM payment_reversals
+       WHERE required_amount>debited_amount ORDER BY updated_at`,
+    );
     console.log(
       JSON.stringify(
         {
           walletMismatches: mismatch.rows,
           overdueCalls: pending.rows,
           pendingPayments: payments.rows,
+          reversalShortfalls: reversals.rows,
           outbox: outbox.rows[0],
         },
         null,
         2,
       ),
     );
-    if (mismatch.rows.length || pending.rows.length || payments.rows.length)
+    if (mismatch.rows.length || pending.rows.length || payments.rows.length || reversals.rows.length)
       process.exitCode = 1;
   }
 } catch (error) {

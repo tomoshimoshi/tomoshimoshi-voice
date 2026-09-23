@@ -1,40 +1,45 @@
 # Stripe: revisión de producción
 
-Fecha: 2026-09-22 (Asia/Tokyo). **Resultado: no listo para cobrar dinero real.**
+Fecha: 2026-09-23 (Asia/Tokyo).
 
-## Verificado directamente
+**Estado: implementación local preparada y probada; permisos de lectura verificados. Activación en producción pendiente de secretos y despliegue. No se ha realizado ningún cobro real.**
 
-- Cuenta Stripe ToMoshiMoshi: `charges_enabled=true`, `payouts_enabled=true`, pagos con tarjeta activos y sin requisitos actualmente vencidos/pendientes. No se copiaron datos personales ni bancarios a este informe.
-- Tres Prices live activos, de pago único, en JPY: ¥1.000 (`price_1UISK9D0IscjIJlKirDaS7T9`), ¥2.000 (`price_1UISKeD0IscjIJlKEed546EH`) y ¥5.000 (`price_1UISLKD0IscjIJlKQSGtrvYp`). No se crearon productos/precios nuevos.
-- Único webhook live listado: `we_1UISDeD0IscjIJlKdeEjIOo6`, habilitado, API `2026-08-26.dahlia`, destino `https://tomoshimoshi.com/api/stripe/webhook`, únicamente `checkout.session.completed`.
-- El destino devuelve HTTP 308 hacia `www`; la ruta en `www` exige sesión (401). El código no implementa esa ruta de Stripe en la web.
-- `https://voice-production-53b8.up.railway.app/healthz` devuelve 200 y `{"status":"ok"}`.
-- Un POST vacío sin firma a `https://voice-production-53b8.up.railway.app/webhooks/stripe` devuelve **503 `BILLING_NOT_CONFIGURED`**. Esto demuestra configuración incompleta/inválida, pero no identifica qué variable falta. No se expusieron secretos ni se generaron pagos.
-- `https://voice.tomoshimoshi.com` falla la validación TLS por nombre de certificado. No usar este dominio como webhook mientras no tenga certificado válido. No se omitió la verificación TLS.
-- La raíz web redirige correctamente por HTTPS a `https://www.tomoshimoshi.com/`.
+## Verificado en Stripe y Railway
 
-## Bloqueos y acciones
+- Cuenta ToMoshiMoshi: `charges_enabled=true`, `payouts_enabled=true`, tarjetas activas y sin requisitos vencidos o pendientes.
+- Tres Prices live activos, pago único, JPY, coincidentes con la configuración local: ¥1.000 (`price_1UISK9D0IscjIJlKirDaS7T9`), ¥2.000 (`price_1UISKeD0IscjIJlKEed546EH`) y ¥5.000 (`price_1UISLKD0IscjIJlKQSGtrvYp`). No se duplicaron productos ni precios.
+- La clave restringida live existente puede leer Prices. Tras guardar el titular los permisos, se verificó mediante llamadas de solo lectura el acceso a Checkout Sessions, PaymentIntents, Refunds y Disputes. Los errores iniciales **403 `more_permissions_required`** de Refunds y Disputes están resueltos. En la revisión inicial las listas de Checkout Sessions y PaymentIntents live estaban vacías.
+- Webhook live `we_1UISDeD0IscjIJlKdeEjIOo6`, API `2026-08-26.dahlia`, habilitado, sigue apuntando a `https://tomoshimoshi.com/api/stripe/webhook`, con solo `checkout.session.completed`. Esa ruta no está implementada en la web. No se cambió el receptor antes de preparar su configuración y despliegue.
+- Railway, proyecto `tomoshimoshi`, servicio `voice`, entorno `production`: hay variables de los tres precios, pero no `STRIPE_SECRET_KEY` ni `STRIPE_WEBHOOK_SECRET` en la lista de variables del servicio. La revisión activa observada es anterior a estos cambios.
+- La cuenta Railway mostraba **Limited Trial**, 30 días o USD 4,98 restantes. Revisar el plan para continuidad del servicio; no se contrató ni modificó ningún plan.
 
-1. **P1 — Backend limitado a test.** `server/billing/stripe/config.ts` exige `sk_test_`; el adaptador rechaza Prices/Sessions/PaymentIntents live y `processStripeEvent` rechaza eventos live. Los precios creados en producción no funcionan con esta versión. Antes de habilitar cobros: implementar modo explícito validado, comprobarlo en todos los objetos, probar ambas ramas, configurar claves/precios/secreto del mismo entorno y separar la base de prueba de los saldos reales. No basta con sustituir la clave.
-2. **P1 — Webhook live en ruta incorrecta y backend sin configuración válida.** Tras preparar el backend live, usar el endpoint del worker `/webhooks/stripe`, inicialmente con el dominio Railway que sí tiene TLS válido. Suscribir `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`. Guardar en Railway el secreto correspondiente a ese endpoint, no el de `stripe listen`. Verificar entrega 200 y aumento único del saldo ante reintentos. No se modificó todavía el endpoint live porque el receptor aún rechaza modo live.
-3. **P1 — Reembolsos/disputas sin tratamiento operativo completo.** El procesamiento actual sólo contempla Checkout. El reembolso interno de uso no es un reembolso de dinero en Stripe. Un reembolso/contracargo en Stripe no revierte ni bloquea automáticamente el saldo comprado; los demás eventos se ignoran. Definir e implementar el procedimiento de saldo, dinero ya gastado, soporte y conciliación antes de lanzar.
-4. **P1 — Falta aceptación completa en el entorno desplegado.** Confirmar migraciones, aislamiento test/live, secretos, acceso con Auth0 y recarga hospedada; después verificar pago demorado, fallo, cancelación, eventos repetidos y conciliación. `/healthz` no certifica Stripe. No se hizo ningún cobro real ni llamada telefónica.
+## Corregido en el código local
 
-## Dominio personalizado descartado
+- Soporte explícito `STRIPE_MODE=live|test`, claves secretas o restringidas del mismo modo. En NODE_ENV=production el valor por defecto es live. Live exige HTTPS.
+- Validación de modo en Price, Checkout Session, PaymentIntent, Price de la línea, webhook y pago interno. Migración `004_live_payments.sql`: modo inmutable de pagos históricos y proyección de reversiones. Los pagos anteriores conservan modo test.
+- Confirmación independiente en Stripe, importes JPY exactos, cantidades, metadatos de titular/compra/paquete, firmas sobre el cuerpo original e idempotencia transaccional.
+- Recuperación de pagos pendientes desde la página de retorno y por conciliación cada minuto. La URL de retorno nunca es evidencia de pago. Conciliación periódica también de compras liquidadas para recuperar devoluciones/disputas cuyo webhook falte.
+- Devoluciones y disputas ajustan el saldo con movimientos contables compensatorios. Los eventos repetidos no duplican la deducción. Reembolsos fallidos o disputas ganadas restauran únicamente el saldo retirado. El saldo reservado no se toca; un faltante bloquea nuevas llamadas y compras y requiere revisión. No se realizan cobros ni devoluciones de dinero automáticamente.
+- Checkout alojado en `checkout.stripe.com`, JPY sin conversión adaptativa, información de compra y enlaces legales. No se contrató dominio personalizado ni se habilitó Stripe Tax.
+- Privacidad, condiciones y aviso comercial (`/commerce`) en español, inglés y japonés. Política aprobada por el titular: sin devoluciones voluntarias, salvo errores de cobro y derechos legales. Enlaces disponibles antes del pago y en los pies de página.
 
-El 2026-09-23 el titular decidió mantener `checkout.stripe.com` para evitar la mensualidad de USD 10. No se contrató la suscripción ni se crearon registros DNS. Se retiraron la variable opcional, el soporte de dominio personalizado y su prueba específica.
+## Verificación local
 
-Se canceló el formulario de alta en Stripe y se verificó que continúan los dominios predeterminados. Tras retirar el cambio, las 34 pruebas de facturación pasaron y `git diff --check` no detectó problemas.
+- Node **24.21.0**, la familia de runtime usada en producción.
+- Backend: `npm run check`, **78 pruebas aprobadas**, lint y TypeScript correctos. Incluye duplicados, rollback, modos live/test, reversiones parciales, disputa ganada, saldo reservado, recuperación de webhooks y aislamiento por titular.
+- Web: `npm run check`, **36 pruebas aprobadas**, TypeScript y build de producción correctos; cinco advertencias de lint preexistentes, sin errores.
+- Vista compilada local: aviso comercial y condiciones accesibles sin login, contenido y navegación verificados en navegador.
+- Las pruebas usan PGlite aislado y transportes Stripe simulados; no cargan secretos de producción ni hacen llamadas reales. Concurrencia PostgreSQL nativa sigue disponible en CI; no equivale a la simulación serial del helper local.
 
-Se conservan los cambios de la revisión independientes del dominio: métodos de pago configurados en Stripe e identificador estable de integración. Estos cambios siguen **sin desplegar**. La publicación del worker requiere mantenimiento sin llamadas, detener el worker anterior y arrancar una sola instancia, según `RAILWAY.md`.
+## Pasos de activación pendientes
 
-## Verificación y límites
+1. El titular debe configurar `STRIPE_SECRET_KEY` y `STRIPE_WEBHOOK_SECRET` en Railway; el segundo debe pertenecer al endpoint live indicado. No compartir secretos por chat ni guardarlos en Git. Fijar `STRIPE_MODE=live`.
+2. Mantener los permisos de la clave restringida según BILLING.md: Checkout Sessions escritura/lectura; Prices, PaymentIntents, Charges, Refunds y Disputes lectura. El titular guardó los permisos y se verificaron las lecturas de Checkout Sessions, PaymentIntents, Refunds y Disputes; la escritura de Checkout no se ha verificado creando una sesión real.
+3. En mantenimiento sin llamadas ni nuevas solicitudes, confirmar base y copia de seguridad; aplicar migración 004 y ejecutar `npm run check:billing`. Revisar cualquier saldo financiado con test antes de usar la misma base en live, sin borrar historial.
+4. Publicar el backend conforme a RAILWAY.md: detener primero la instancia anterior y arrancar una sola instancia con la nueva revisión/configuración. Publicar la web con sus textos y enlaces.
+5. Cambiar el webhook live a `https://voice-production-53b8.up.railway.app/webhooks/stripe` y suscribir los 13 eventos documentados en BILLING.md. Conservar el secreto del endpoint. Comprobar que la firma se acepta y la entrega responde 200.
+6. Abrir los tres paquetes desde la web autenticada y comprobar importes. El titular debe completar una compra real controlada para verificar autorización, entrega única de crédito y conciliación. No usar tarjetas de prueba en live. Una prueba local, `/healthz` o una cuenta Stripe habilitada no certifican ese recorrido.
 
-- Backend (verificación del 2026-09-22, antes de retirar el dominio opcional): `npm run check`, lint/typecheck correctos y **69 pruebas aprobadas**, incluyendo firmas, duplicados, rollback, importes, ledger y rechazo/aceptación de dominios. La primera ejecución en sandbox falló al abrir un puerto local; la ejecución autorizada fuera de esa restricción pasó íntegra. Proveedores simulados y bases aisladas, sin `.env` de producción.
-- Web: lint sin errores (5 advertencias existentes), typecheck, **29 pruebas aprobadas** y build de producción correcto.
-- `npm audit --omit=dev`: cero vulnerabilidades reportadas en ambos repositorios.
-- Las pruebas locales se ejecutaron con Node 25.6; CI/Docker fijan Node 24. No se ejecutaron aquí las pruebas de concurrencia en PostgreSQL nativo; están configuradas en CI. No se leyó ni modificó la base de producción.
-- El conector Vercel disponible no expone el proyecto ToMoshiMoshi; no se certificaron variables ni revisión desplegada de Vercel/Railway.
-- Revisar soporte público, términos, privacidad, política de reembolsos y tratamiento fiscal antes del lanzamiento. Los Prices muestran `tax_behavior=unspecified` y el Checkout no activa impuestos automáticos. No se activó Stripe Tax ni se asumió una obligación tributaria concreta.
+La entrada de credenciales por navegador requiere intervención del titular según las reglas de la herramienta. El titular modificó los permisos de la clave existente. El agente no ha modificado claves, saldos ni despliegues de producción en esta revisión.
 
-Referencias: [cumplimiento de Checkout](https://docs.stripe.com/checkout/fulfillment), [webhooks](https://docs.stripe.com/webhooks), [dominios personalizados](https://docs.stripe.com/payments/checkout/custom-domains), [precio del dominio](https://support.stripe.com/questions/custom-domain-on-stripe-hosted-surfaces-faq).
+Fuentes: [Stripe go-live](https://docs.stripe.com/get-started/checklist/go-live), [reembolsos de Stripe](https://docs.stripe.com/refunds), [información de venta a distancia de la Agencia de Asuntos del Consumidor de Japón](https://www.no-trouble.caa.go.jp/what/mailorder/). El tratamiento fiscal y cualquier obligación regulatoria del saldo prepago requieren validación específica del negocio; actualizar los textos no constituye una certificación jurídica.

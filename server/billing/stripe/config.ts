@@ -13,8 +13,13 @@ function required(name: string, prefix?: string) {
   return value;
 }
 export function stripeConfig() {
-  // Explicit test-only guard for this release. No fallback credentials.
-  const secret = required("STRIPE_SECRET_KEY", "sk_test_");
+  const mode = process.env.STRIPE_MODE?.trim() ||
+    (process.env.NODE_ENV === "production" ? "live" : "test");
+  if (mode !== "live" && mode !== "test")
+    throw new BillingConfigurationError("STRIPE_MODE must be live or test");
+  const secret = required("STRIPE_SECRET_KEY");
+  if (!new RegExp(`^(sk|rk)_${mode}_.+`).test(secret))
+    throw new BillingConfigurationError(`STRIPE_SECRET_KEY must be a ${mode} secret or restricted key`);
   const webhookSecret = required("STRIPE_WEBHOOK_SECRET", "whsec_");
   const prices = Object.fromEntries(
     Object.entries(packages).map(([code, p]) => [
@@ -43,6 +48,7 @@ export function stripeConfig() {
     url.hash ||
     (url.protocol !== "https:" &&
       !(
+        mode === "test" &&
         url.protocol === "http:" &&
         ["localhost", "127.0.0.1"].includes(url.hostname)
       ))
@@ -50,5 +56,5 @@ export function stripeConfig() {
     throw new BillingConfigurationError(
       "APP_BASE_URL must be an HTTPS origin (HTTP loopback allowed locally)",
     );
-  return { secret, webhookSecret, prices, origin: url.origin };
+  return { secret, webhookSecret, prices, origin: url.origin, livemode: mode === "live" };
 }
