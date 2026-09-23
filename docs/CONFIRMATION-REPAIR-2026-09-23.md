@@ -50,3 +50,24 @@ instrucciones enviadas, no garantizan por sí solas cada frase del modelo real.
 No se hacen llamadas reales durante esta reparación. La validación telefónica
 posterior debe comprobar que, tras elegir las 14:00, solo se solicita esa hora
 a la clínica y un único «sí» a la lectura final conduce a la despedida.
+
+## Despliegue y comprobación sintética
+
+Se publicó `ed57362` en Railway, despliegue
+`da519a83-6758-4c78-af22-55d424605361`, estado `SUCCESS`, con arranque del worker
+a las 16:42:46 JST. Antes de detener la versión anterior se consultó el número
+de llamadas activas: cero. Se conservó una sola réplica en Singapur y se esperó
+el estado `REMOVED` anterior antes de desplegar la nueva revisión.
+
+`/healthz` respondió 200, `/state` sin credenciales respondió 401 y el detalle
+autenticado volvió a cargar sin errores, conservando «Ended by you».
+
+Dos sesiones reales de Realtime 2.1, con entradas ficticias de texto y salida
+de audio PCMU, probaron la respuesta privada «14:00 is ok». En español generó:
+«Gracias. Para la limpieza dental del 24 de septiembre, ¿puede reservarla a las
+2 de la tarde para Test User?». En inglés solicitó directamente la reserva de
+las 2 PM y preguntó si quedaba reservada. En ambos casos finalizó el turno sin
+`finish_call`, sin afirmar éxito ni anunciar al usuario privado un plan.
+El audio se descartó; no se envió a Telnyx ni se marcó ningún teléfono.
+Son dos muestras sintéticas, no una garantía de todas las formulaciones ni
+una validación acústica de una llamada completa.
