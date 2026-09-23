@@ -14,6 +14,10 @@ El servicio `voice` usa la rama `main` de
 `tomoshimoshi/tomoshimoshi-voice`.
 El despliegue web de Vercel sigue usando `main`.
 
+Desde el 23 de septiembre de 2026, la única réplica de producción está en
+Singapur (`asia-southeast1-eqsg3a`), junto a Neon (`ap-southeast-1`). La web fija
+sus funciones en `sin1`. Ver [mediciones y límites de la comparación](LATENCY-REGIONS-2026-09-23.md).
+
 ## Crear el servicio
 
 1. Crear un servicio en Railway desde `tomoshimoshi/tomoshimoshi-voice`, usando una revisión
