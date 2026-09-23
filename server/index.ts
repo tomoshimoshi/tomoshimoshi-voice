@@ -27,6 +27,7 @@ import {
   update,
   flushCall,
   storageHealthy,
+  liveCall,
 } from "./engine";
 import {
   calls,
@@ -260,7 +261,7 @@ const server = createServer(async (req, res) => {
       );
       const configured = readiness();
       return json(res, 200, {
-        calls: history.slice(0, 50),
+        calls: history.slice(0, 50).map(call => ({ ...call, ...(liveCall(call.id, userId) || {}), transcript: [], billing: call.billing })),
         wallet,
         hasMoreCalls: history.length > 50,
         profile: personal,
@@ -339,10 +340,11 @@ const server = createServer(async (req, res) => {
     );
     if (match) {
       const id = z.uuid().parse(match[1]);
-      if (!(await getCall(id, userId)))
+      const stored = await getCall(id, userId);
+      if (!stored)
         return json(res, 404, { error: "NOT_FOUND" });
       if (req.method === "GET" && !match[2])
-        return json(res, 200, await getCall(id, userId));
+        return json(res, 200, { ...stored, ...(liveCall(id, userId) || {}), billing: stored.billing });
       if (req.method === "POST" && match[2] === "answer") {
         const data = answerSchema.parse(JSON.parse(await body(req)));
         return json(

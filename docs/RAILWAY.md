@@ -56,7 +56,8 @@ Configurar secretos en Variables de Railway, nunca en Git ni en el navegador.
 | `APP_BASE_URL` | `https://www.tomoshimoshi.com`, el origen canónico exacto configurado en Vercel/Auth0. |
 | `PUBLIC_BASE_URL` | `https://DOMINIO-RAILWAY`, sin rutas; después puede ser `https://voice.tomoshimoshi.com`. |
 | `OPENAI_API_KEY` | Clave del proyecto OpenAI existente. |
-| `OPENAI_REALTIME_MODEL` | Opcional, conservar el modelo validado; por defecto `gpt-realtime`. |
+| `OPENAI_REALTIME_MODEL` | Opcional, conservar el modelo validado; por defecto `gpt-realtime-2.1`, con razonamiento bajo. Ver [evaluación de voz](VOICE-AGENT-REVIEW-2026-09-23.md). |
+| `OPENAI_TRANSCRIPTION_MODEL` | Opcional, por defecto `gpt-4o-mini-transcribe-2025-12-15`. |
 | `OPENAI_TEXT_MODEL` | Opcional, por defecto `gpt-4.1-mini`. |
 | `TELNYX_API_KEY` | Clave Telnyx existente. |
 | `TELNYX_CONNECTION_ID` | Aplicación Voice API / Call Control existente. |

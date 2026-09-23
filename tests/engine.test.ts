@@ -54,7 +54,7 @@ globalThis.fetch = async (input, init) => {
           content: [
             {
               type: "output_text",
-              text: JSON.stringify({
+              text: JSON.stringify(body.text?.format?.name === "recipient_confirmation" ? { confirmed: true } : {
                 en: "Translated text",
                 es: "Texto traducido",
                 ja: "翻訳されたテキスト",
@@ -267,6 +267,7 @@ test("live bridge relays audio, asks the user, resumes the same session and comp
   ai.event({ type: "input_audio_buffer.speech_started" });
   assert.equal(phone.sent.at(-1)?.event, "clear");
   assert.equal(ai.sent.at(-1)?.type, "conversation.item.truncate");
+  ai.event({ type: "input_audio_buffer.speech_stopped" });
   ai.event({
     type: "conversation.item.input_audio_transcription.completed",
     transcript: "水曜日でよろしいですか？",
@@ -325,8 +326,13 @@ test("live bridge relays audio, asks the user, resumes the same session and comp
     "pending question suppresses repeated automatic replies",
   );
   assert.equal((await storedCall(c.id))?.status, "waiting");
-  assert.equal(ai.sent.at(-1)?.item.call_id, "function-1");
-  assert.ok(ai.sent.at(-1)?.item.output.includes("pending"));
+  const pendingOutput = ai.sent.find(x => x.item?.call_id === "function-1");
+  assert.ok(pendingOutput?.item.output.includes("pending"));
+  assert.equal(ai.sent.at(-1)?.type, "response.create", "server creates the initial hold even when the tool turn had no speech");
+  assert.match(ai.sent.at(-1)?.response.instructions, /One moment/);
+  assert.deepEqual(ai.sent.at(-1)?.response.input, [], "hold speech cannot see or repeat the private question");
+  ai.event({ type: "response.done", response: { output: [] } });
+  await settle();
   assert.equal(ai.readyState, WebSocket.OPEN);
   assert.equal(phone.readyState, WebSocket.OPEN);
   const clockNow = Date.now;
@@ -392,6 +398,7 @@ test("live bridge relays audio, asks the user, resumes the same session and comp
     "翻訳されたテキスト",
   );
   assert.equal(engine.sessions.get(c.id)?.ai, ai);
+  ai.event({ type: "input_audio_buffer.committed", item_id: "recipient-cannot-book-thursday" });
   ai.event({
     type: "response.done",
     response: {
@@ -550,4 +557,71 @@ test("cancelled model responses cannot execute tools and terminal calls ignore q
   await settle();
   assert.equal((await storedCall(call.id))?.question, undefined);
   assert.equal((await storedCall(call.id))?.status, "cancelled");
+});
+
+test("success requires a played readback and new recipient evidence; a goodbye interruption cancels hangup", async () => {
+  const call = await engine.createCall({ ...input, language: "en" }, randomUUID(), userId);
+  const phone = new FakeSocket(), ai = new FakeSocket();
+  engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+  phone.event({ event: "start", start: { call_control_id: "test-control-id", media_format: { encoding: "PCMU", sample_rate: 8000 } } });
+  ai.emit("open"); ai.event({ type: "session.updated" });
+  const done = (name: string, args: unknown) => ai.event({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", name, arguments: JSON.stringify(args), call_id: randomUUID() }] } });
+  const success = { outcome: "success", summary: "Appointment confirmed.", details: [], confirmation_quote: "Yes, confirmed for 10 AM." };
+  done("finish_call", success);
+  await settle();
+  assert.equal((await storedCall(call.id))?.result, undefined, "cannot close on an invented reply");
+  assert.ok(ai.sent.some(e => e.item?.output?.includes("RECIPIENT_CONFIRMATION_REQUIRED")));
+  done("confirm_details", { question: "Can you confirm the cleaning on September 24 at 10 AM for Test User?" });
+  await settle();
+  assert.equal(ai.sent.at(-1)?.response.tool_choice, "none", "the readback turn cannot finish the call");
+  ai.event({ type: "response.output_audio.delta", item_id: "readback", delta: "abcd" });
+  ai.event({ type: "response.output_audio.done", item_id: "readback" });
+  ai.event({ type: "response.done", response: { output: [] } });
+  await settle();
+  phone.event({ event: "mark", mark: { name: "readback" } });
+  ai.event({ type: "input_audio_buffer.speech_started", item_id: "confirmation" });
+  ai.event({ type: "input_audio_buffer.speech_stopped" });
+  ai.event({ type: "input_audio_buffer.committed", item_id: "confirmation" });
+  ai.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "confirmation", transcript: success.confirmation_quote });
+  done("finish_call", success);
+  await settle(); await settle();
+  assert.equal((await storedCall(call.id))?.result?.outcome, "success");
+  assert.equal(ai.sent.at(-1)?.response.tool_choice, "none", "only the server's goodbye is spoken after verification");
+  assert.equal(phone.readyState, WebSocket.OPEN, "generation completion is not playback completion");
+  ai.event({ type: "response.output_audio.delta", item_id: "goodbye", delta: "abcd" });
+  ai.event({ type: "response.output_audio.done", item_id: "goodbye" });
+  ai.event({ type: "response.done", response: { output: [] } });
+  await settle();
+  phone.event({ event: "mark", mark: { name: "goodbye" } });
+  ai.event({ type: "input_audio_buffer.speech_started", item_id: "correction" });
+  assert.equal(engine.sessions.get(call.id)?.finishing, false);
+  assert.equal((await storedCall(call.id))?.result, undefined, "a correction during the goodbye grace period invalidates the result");
+  await engine.endCall(call.id, "cancelled");
+});
+
+test("question timeout explains the unanswered wait before ending, and active snapshots remain owner scoped", async () => {
+  const call = await engine.createCall({ ...input, language: "es" }, randomUUID(), userId);
+  const phone = new FakeSocket(), ai = new FakeSocket();
+  engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+  phone.event({ event: "start", start: { call_control_id: "test-control-id", media_format: { encoding: "PCMU", sample_rate: 8000 } } });
+  ai.emit("open"); ai.event({ type: "session.updated" });
+  ai.event({ type: "response.done", response: { output: [] } });
+  await settle();
+  engine.askUser(call.id, "¿Te viene bien?", "approval");
+  assert.equal(engine.liveCall(call.id, randomUUID()), undefined);
+  const snapshot = engine.liveCall(call.id, userId)!;
+  assert.equal(snapshot.status, "waiting");
+  snapshot.question!.text = "mutation";
+  assert.equal(engine.liveCall(call.id, userId)?.question?.text, "¿Te viene bien?");
+  engine.sessions.get(call.id)!.expireQuestion!();
+  assert.match(ai.sent.at(-1)?.response.instructions, /no he recibido su respuesta/);
+  assert.equal(phone.readyState, WebSocket.OPEN);
+  ai.event({ type: "response.output_audio.delta", item_id: "timeout-goodbye", delta: "abcd" });
+  ai.event({ type: "response.output_audio.done", item_id: "timeout-goodbye" });
+  ai.event({ type: "response.done", response: { output: [] } });
+  await settle();
+  phone.event({ event: "mark", mark: { name: "timeout-goodbye" } });
+  await new Promise(resolve => setTimeout(resolve, 1400));
+  assert.equal((await storedCall(call.id))?.error, "ANSWER_TIMEOUT");
+  assert.equal((await storedCall(call.id))?.status, "failed");
 });

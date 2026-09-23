@@ -8,6 +8,16 @@ import { transaction } from "./transaction";
 export { transaction } from "./transaction";
 import { authorizeCall } from "./calls/billing";
 export async function ensureUser(identity: Identity): Promise<string> {
+  // Most polling requests use an unchanged identity. Avoid opening a transaction,
+  // acquiring a lock and issuing writes on every live transcript refresh.
+  // Keep legacy ownership migration and changed claims on the locked slow path.
+  const known = await database().query(
+    `SELECT id FROM users WHERE auth0_sub=$1 AND email=$2 AND email_verified=$3
+      AND NOT EXISTS (SELECT 1 FROM users WHERE legacy_owner AND auth0_sub IS NULL
+        AND lower(email)=lower($2) AND $3)`,
+    [identity.sub, identity.email, identity.emailVerified],
+  );
+  if (known.rows[0]) return known.rows[0].id;
   return transaction(async (client) => {
     // A stable subject identifies the account; matching email alone never merges users.
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [

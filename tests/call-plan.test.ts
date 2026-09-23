@@ -110,5 +110,5 @@ test("Japanese interface preferences are accepted and private prompts stay separ
   };
   const prompt = instructions(call, profile);
   assert.match(prompt, /Speak ONLY English on the telephone/);
-  assert.match(prompt, /question, summary and details use Japanese/);
+  assert.match(prompt, /ask_user question and finish_call summary\/details use Japanese/);
 });

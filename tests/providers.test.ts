@@ -26,3 +26,20 @@ test("active or unknown carrier state is never treated as successful hangup", as
     await assert.rejects(() => hangup("fixture", "unique-command"));
   }
 });
+
+test("confirmation verification uses a bounded structured decision and fails closed", async () => {
+  const { confirmationIsExplicit } = await import("../server/providers");
+  for (const value of [{ confirmed: true }, { confirmed: false }, {}, { confirmed: "true" }]) {
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.text.format.name, "recipient_confirmation");
+      assert.equal(body.store, false);
+      assert.ok(init?.signal);
+      assert.equal(JSON.parse(body.input).reply, "Hello.");
+      return Response.json({ output: [{ content: [{ type: "output_text", text: JSON.stringify(value) }] }] });
+    };
+    assert.equal(await confirmationIsExplicit("Is it booked?", "Hello."), value.confirmed === true);
+  }
+  globalThis.fetch = async () => Response.json({}, { status: 503 });
+  await assert.rejects(() => confirmationIsExplicit("Is it booked?", "Yes."), /CONFIRMATION_CHECK_UNAVAILABLE/);
+});
