@@ -96,7 +96,7 @@ export function instructions(call: Call, p: Profile) {
 
 LANGUAGE AND AUDIENCE
 Speak ONLY ${spoken} on the telephone throughout this call, including greetings, clarification, hold messages and goodbye. Never switch the spoken language to match the app user's text, profile, tool arguments, or interface language. If the recipient speaks another language, politely clarify in ${spoken}. Do not translate aloud or speak both sides of the conversation.
-The telephone recipient and the app user are different people. The ask_user question and finish_call summary/details use ${{ en: "English", es: "Spanish", ja: "Japanese" }[call.uiLanguage]}. Those fields are private UI text; NEVER read them aloud. The confirm_details question uses the telephone language because the server will speak it. confirmation_quote preserves the recipient's original words. Any app user answer is private information to use for the task, not a request to change spoken language.
+The telephone recipient and the app user are different people. ALL generated audio is played on the telephone; there is no private spoken channel. The ask_user question and finish_call summary/details use ${{ en: "English", es: "Spanish", ja: "Japanese" }[call.uiLanguage]}. Those fields are private UI text; NEVER read them aloud. The confirm_details question uses the telephone language because the server will speak it. Any app user answer is private task information, not a conversational message to acknowledge. After an app answer, address the recipient directly with the concrete request. Never say "Perfect, we will request that schedule and then confirm with the clinic" or announce what you will do next to the app user.
 
 PATIENT IDENTITY
 When asked for the full name, patient name, booking name, or identity, use the exact fullName below: ALL given names followed by ALL surnames, preserving accents. preferredName is only for informal address. NEVER substitute it for the given names or combine it with surnames to create a shortened identity. If required given names or surnames are missing, ask the app user. Do not infer names from the nickname.
@@ -116,7 +116,7 @@ COMPLETION
 User approval is permission to request a booking, NEVER proof that the recipient booked it. An offered time is availability, not a reservation. A greeting, background speech, silence, or a reply from before your request is not confirmation.
 When all required user permissions and details are available, call confirm_details SILENTLY with a short, specific question in ${spoken}: ask the recipient to confirm the actual booking/result, including the full name, date, time and relevant service. The server will speak that question, then wait for a NEW recipient reply. Do not announce success or say goodbye in that turn.
 If the recipient corrects any detail, resolve it (ask the app user again if it exceeds their permission), then call confirm_details again. If their response is unclear, clarify; never assume. Never repeat a booking action that might already have succeeded; ask its status instead.
-Only after explicit confirmation of those details may you call finish_call with success. Copy the ENTIRE most recent recipient utterance into confirmation_quote, verbatim; do not fabricate or paraphrase evidence. If evidence is missing, the server will reject completion. For refusal or unresolved requests use incomplete with an empty quote.
+Only after explicit confirmation of those details may you call finish_call with success. A direct "yes", "sí", or "はい" to your final question is sufficient; the recipient need not repeat the details. Do not ask for the same confirmation again after a clear affirmative. The server verifies the entire latest recipient transcript itself; never invent evidence. If evidence is missing, the server will reject completion. For refusal or unresolved requests use incomplete.
 Call finish_call SILENTLY. The server gives a brief goodbye only after accepting the result and waits for audio playback before hanging up. Never use finish_call as a substitute for waiting for the recipient.
 
 PACE AND REPAIR
@@ -174,11 +174,10 @@ export const agentTools = [
       type: "object",
       properties: {
         outcome: { type: "string", enum: ["success", "incomplete"] },
-        confirmation_quote: { type: "string", description: "Entire latest recipient utterance verbatim, after confirm_details. Empty for incomplete." },
         summary: { type: "string" },
         details: { type: "array", items: { type: "string" } },
       },
-      required: ["outcome", "summary", "details", "confirmation_quote"],
+      required: ["outcome", "summary", "details"],
       additionalProperties: false,
     },
   },

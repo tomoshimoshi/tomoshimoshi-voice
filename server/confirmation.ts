@@ -6,6 +6,10 @@ export class ConfirmationGate {
   get latestItemId() {
     return this.turns.at(-1);
   }
+  get eligibleItemId() {
+    const latest = this.latestItemId;
+    return latest && this.eligible.has(latest) ? latest : undefined;
+  }
   private turns: string[] = [];
   private checkpoint?: { item?: string; played: boolean };
   private eligible = new Set<string>();
@@ -45,11 +49,11 @@ export class ConfirmationGate {
   interrupt(itemId: string) {
     if (this.checkpoint?.item === itemId) this.reset();
   }
-  evidence(transcript: { id: string; role: string; original: string }[], quote: string) {
-    const latest = this.turns.at(-1);
-    const normalize = (text: string) => text.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
-    return !!latest && !!quote.trim() && this.eligible.has(latest) &&
-      transcript.some(line => line.id === latest && line.role === "recipient" &&
-        normalize(line.original) === normalize(quote));
+  latestEvidence(transcript: { id: string; role: string; original: string }[]) {
+    const latest = this.eligibleItemId;
+    // The ASR item is authoritative. Requiring the voice model to reproduce its
+    // punctuation/wording rejects valid replies even after semantic verification.
+    return latest ? transcript.find(line => line.id === latest &&
+      line.role === "recipient" && line.original.trim()) : undefined;
   }
 }

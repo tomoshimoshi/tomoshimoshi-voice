@@ -9,29 +9,29 @@ test("the reported failure: earlier availability and a private answer cannot con
   reply(gate, "offered-time");
   gate.reset(); // private answer
   const transcript = [line("offered-time"), line("answer", "user")];
-  assert.equal(gate.evidence(transcript, transcript[0].original), false);
+  assert.equal(!!gate.latestEvidence(transcript), false);
   readback(gate);
-  assert.equal(gate.evidence(transcript, transcript[0].original), false, "silence after the readback is not consent");
+  assert.equal(!!gate.latestEvidence(transcript), false, "silence after the readback is not consent");
 });
 test("success needs a full matching utterance that STARTED after playback", () => {
   const gate = new ConfirmationGate();
   gate.begin(); gate.audio("readback"); gate.speechStarted("early");
   gate.played("readback"); gate.commit("early");
-  assert.equal(gate.evidence([line("early")], line("early").original), false);
+  assert.equal(!!gate.latestEvidence([line("early")]), false);
   reply(gate, "new");
-  assert.equal(gate.evidence([], line("new").original), false, "late ASR has not supplied evidence yet");
-  assert.equal(gate.evidence([line("new")], "Yes"), false, "a fragment can hide a later qualification");
-  assert.equal(gate.evidence([line("new", "agent")], line("new").original), false);
-  assert.equal(gate.evidence([line("new")], line("new").original), true);
+  assert.equal(!!gate.latestEvidence([]), false, "late ASR has not supplied evidence yet");
+  assert.equal(gate.latestEvidence([line("new", "recipient", "Yes, but at 3 PM.")])?.original, "Yes, but at 3 PM.", "the verifier receives the ENTIRE reply, including qualifications");
+  assert.equal(!!gate.latestEvidence([line("new", "agent")]), false);
+  assert.equal(!!gate.latestEvidence([line("new")]), true);
   reply(gate, "correction");
-  assert.equal(gate.evidence([line("new"), line("correction", "recipient", "Actually, no.")], line("new").original), false);
+  assert.equal(gate.latestEvidence([line("new"), line("correction", "recipient", "Actually, no.")])?.original, "Actually, no.");
 });
 test("an interrupted readback or new user answer invalidates confirmation", () => {
   for (const reset of [(g: ConfirmationGate) => g.interrupt("readback"), (g: ConfirmationGate) => g.reset()]) {
     const gate = new ConfirmationGate(); readback(gate); reset(gate);
     gate.played("readback"); // clear flushes queued marks too
     reply(gate, "reply");
-    assert.equal(gate.evidence([line("reply")], line("reply").original), false);
+    assert.equal(!!gate.latestEvidence([line("reply")]), false);
   }
 });
 
@@ -41,7 +41,7 @@ test("multiple audio parts require playback of the final part", () => {
   gate.speechStarted("between-parts");
   gate.audio("second"); gate.played("first"); gate.played("second");
   gate.commit("between-parts");
-  assert.equal(gate.evidence([line("between-parts")], line("between-parts").original), false);
+  assert.equal(!!gate.latestEvidence([line("between-parts")]), false);
   reply(gate, "after-all-parts");
-  assert.equal(gate.evidence([line("after-all-parts")], line("after-all-parts").original), true);
+  assert.equal(!!gate.latestEvidence([line("after-all-parts")]), true);
 });

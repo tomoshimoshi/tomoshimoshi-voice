@@ -374,11 +374,10 @@ test("live bridge relays audio, asks the user, resumes the same session and comp
   ai.event({ type: "response.done", response: { output: [] } });
   await settle();
   assert.equal(ai.sent.at(-1)?.type, "response.create");
-  assert.equal(
-    ai.sent.at(-1)?.response,
-    undefined,
-    "resume normal tools after the real answer",
-  );
+  assert.match(ai.sent.at(-1)?.response.instructions, /Your only spoken audience is the telephone recipient/,
+    "private answer instructions survive a queued response during hold speech");
+  assert.match(ai.sent.at(-1)?.response.instructions, /Do not acknowledge the app answer/);
+  assert.equal(ai.sent.at(-1)?.response.tool_choice, undefined, "normal tools remain available");
   assert.ok(
     !ai.sent.some((x) => JSON.stringify(x).includes("Texto traducido")),
     "display translations never enter the voice session",
@@ -625,3 +624,73 @@ test("question timeout explains the unanswered wait before ending, and active sn
   assert.equal((await storedCall(call.id))?.error, "ANSWER_TIMEOUT");
   assert.equal((await storedCall(call.id))?.status, "failed");
 });
+
+for (const scenario of ["quoted differently", "no model quote", "late transcription", "negative reply", "cancelled while verifying", "correction while verifying"] as const) {
+  test(`final confirmation uses recipient ASR: ${scenario}`, async () => {
+    const call = await engine.createCall({ ...input, language: "es" }, randomUUID(), userId);
+    const phone = new FakeSocket(), ai = new FakeSocket();
+    engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+    phone.event({ event: "start", start: { call_control_id: "test-control-id", media_format: { encoding: "PCMU", sample_rate: 8000 } } });
+    ai.emit("open"); ai.event({ type: "session.updated" });
+    const done = (name: string, args: unknown) => ai.event({ type: "response.done", response: { status: "completed", output: [{ type: "function_call", name, arguments: JSON.stringify(args), call_id: randomUUID() }] } });
+    const question = "¿Queda reservada la limpieza dental para Test User el 24 de septiembre a las 14:00?";
+    done("confirm_details", { question });
+    await settle();
+    ai.event({ type: "response.output_audio.delta", item_id: "readback", delta: "abcd" });
+    ai.event({ type: "response.output_audio.done", item_id: "readback" });
+    ai.event({ type: "response.done", response: { output: [] } });
+    await settle();
+    phone.event({ event: "mark", mark: { name: "readback" } });
+    ai.event({ type: "input_audio_buffer.speech_started", item_id: "reply" });
+    ai.event({ type: "input_audio_buffer.speech_stopped" });
+    ai.event({ type: "input_audio_buffer.committed", item_id: "reply" });
+    const reply = scenario === "negative reply" ? "Sí, pero no queda reservada hasta que pague." : "Sí.";
+    const fetchBefore = globalThis.fetch;
+    let release: (() => void) | undefined;
+    let verificationCount = 0;
+    globalThis.fetch = async (url, init) => {
+      const body = JSON.parse(String(init?.body || "{}"));
+      if (body.text?.format?.name === "recipient_confirmation") {
+        verificationCount++;
+        assert.deepEqual(JSON.parse(body.input), { question, reply }, "verify the complete original, never the model's quote or UI translation");
+        if (scenario.endsWith("while verifying")) await new Promise<void>(resolve => { release = resolve; });
+        return Response.json({ output: [{ content: [{ type: "output_text", text: JSON.stringify({ confirmed: scenario !== "negative reply" }) }] }] });
+      }
+      return fetchBefore(url, init);
+    };
+    try {
+      const transcribe = () => ai.event({ type: "conversation.item.input_audio_transcription.completed", item_id: "reply", transcript: reply });
+      if (scenario !== "late transcription") transcribe();
+      const result = { outcome: "success", summary: "Reserva confirmada.", details: [] as string[],
+        ...(scenario === "no model quote" ? {} : { confirmation_quote: "Yes" }) };
+      done("finish_call", result);
+      await settle();
+      if (scenario === "late transcription") {
+        assert.equal((await storedCall(call.id))?.result, undefined);
+        assert.ok(!ai.sent.some(e => e.item?.output?.includes("RECIPIENT_CONFIRMATION_REQUIRED")), "wait silently for ASR instead of restarting readback");
+        transcribe();
+      }
+      if (scenario === "cancelled while verifying") await engine.endCall(call.id, "cancelled");
+      if (scenario === "correction while verifying") ai.event({ type: "input_audio_buffer.speech_started", item_id: "correction" });
+      release?.();
+      await settle(); await settle();
+      const stored = await storedCall(call.id);
+      if (scenario === "negative reply" || scenario.endsWith("while verifying")) {
+        if (scenario === "cancelled while verifying") {
+          assert.equal(stored?.status, "cancelled", "a user hangup is not agent success");
+          assert.equal(stored?.result?.outcome, "cancelled");
+        } else assert.equal(stored?.result, undefined);
+      } else {
+        assert.equal(stored?.result?.outcome, "success");
+        assert.match(ai.sent.at(-1)?.response.instructions, /Gracias por su ayuda/);
+        assert.ok(!ai.sent.some(e => e.item?.output?.includes("RECIPIENT_CONFIRMATION_REQUIRED")));
+        assert.equal(phone.readyState, WebSocket.OPEN, "still wait for goodbye playback before hangup");
+      }
+      assert.equal(verificationCount, 1, "reuse ASR verification rather than checking a differently quoted reply twice");
+    } finally {
+      release?.();
+      globalThis.fetch = fetchBefore;
+      await engine.endCall(call.id, "cancelled");
+    }
+  });
+}
