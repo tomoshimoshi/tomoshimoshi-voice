@@ -92,6 +92,12 @@ Vercel se configura en `sin1` mediante `vercel.json` del repositorio web,
 eliminando el paso por Virginia para las funciones. No se requiere un plan
 de múltiples regiones ni se aumenta el número de réplicas.
 
+Vercel publicó el commit `3f7630c` en el despliegue
+`HWFwJfB5mPgyBqPTxKcmSqrZTHYK` con estado `Ready`. Su tabla de recursos confirma
+`SIN1` para `/api/[...path]` y las páginas; el middleware sigue distribuido
+globalmente. El dashboard autenticado cargó historial y saldo correctamente
+después de refrescarlo. No se realizó una llamada telefónica para esta comparación.
+
 ## Qué queda por medir
 
 - En una nueva llamada controlada: `voice.first_audio` (`turnMs`, `modelMs`,
