@@ -64,6 +64,10 @@ import { processReversalEvent, reversalEvents } from "./billing/reversals";
 import { reconcilePayment, reconcilePayments } from "./billing/reconcile";
 import { observeCallEvent } from "./calls/billing";
 import { voiceListener } from "./listener";
+import { createRateLimiter } from "./rate-limit";
+const allowRequest = createRateLimiter();
+const allowPaymentRefresh = createRateLimiter(20);
+const allowCallControl = createRateLimiter(60);
 const token = internalToken();
 const listener = voiceListener();
 let accepting = false;
@@ -178,7 +182,7 @@ const server = createServer(async (req, res) => {
           : [...sessions.entries()].find(
               ([, s]) => s.controlId === event.payload.call_control_id,
             )?.[0];
-        if (id && (await getCall(id))?.mode === "live") {
+        if (id && z.uuid().safeParse(id).success && (await getCall(id))?.mode === "live") {
           const knownControl = await getControl(id);
           if (knownControl && knownControl !== event.payload.call_control_id)
             return json(res, 200, { ok: true });
@@ -213,6 +217,12 @@ const server = createServer(async (req, res) => {
       String(req.headers["x-callori-identity"] || ""),
     );
     if (!identity) return json(res, 401, { error: "UNAUTHORIZED" });
+    // Polling or another tab must not consume the budget for answering/hanging up.
+    const control = req.method === "POST" && /^\/calls\/[0-9a-f-]{36}\/(answer|cancel)$/.test(url.pathname);
+    if (!(control ? allowCallControl : allowRequest)(identity.sub)) {
+      res.setHeader("Retry-After", "60");
+      return json(res, 429, { error: "API_RATE_LIMIT" });
+    }
     const userId = await ensureUser(identity);
     if (req.method === "GET" && url.pathname === "/wallet")
       return json(res, 200, await walletSummary(userId));
@@ -225,6 +235,11 @@ const server = createServer(async (req, res) => {
       /^\/billing\/payments\/([0-9a-f-]{36})$/,
     );
     if (req.method === "GET" && paymentMatch) {
+      z.uuid().parse(paymentMatch[1]);
+      if (!allowPaymentRefresh(identity.sub)) {
+        res.setHeader("Retry-After", "60");
+        return json(res, 429, { error: "API_RATE_LIMIT" });
+      }
       try { await reconcilePayment(paymentMatch[1], userId); }
       catch { billingLog("payment.reconciliation_failed", { paymentId: paymentMatch[1] }); }
       const payment = await paymentStatus(userId, paymentMatch[1]);
@@ -323,7 +338,7 @@ const server = createServer(async (req, res) => {
       /^\/calls\/([0-9a-f-]{36})(?:\/(answer|cancel))?$/,
     );
     if (match) {
-      const id = match[1];
+      const id = z.uuid().parse(match[1]);
       if (!(await getCall(id, userId)))
         return json(res, 404, { error: "NOT_FOUND" });
       if (req.method === "GET" && !match[2])
@@ -355,6 +370,7 @@ const server = createServer(async (req, res) => {
       "INSUFFICIENT_CREDIT",
       "CHECKOUT_UNAVAILABLE",
       "CHECKOUT_EXPIRED",
+      "CHECKOUT_RATE_LIMIT",
       "IDEMPOTENCY_CONFLICT",
       "PRICING_NOT_CONFIGURED",
       "PAYMENT_MISMATCH",
@@ -376,7 +392,7 @@ const server = createServer(async (req, res) => {
     ];
     json(
       res,
-      message === "RATE_LIMIT"
+      ["RATE_LIMIT", "CHECKOUT_RATE_LIMIT"].includes(message)
         ? 429
         : [
               "SERVICE_UNAVAILABLE",

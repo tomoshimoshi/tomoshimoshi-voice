@@ -4,6 +4,7 @@ La documentación describe el servicio separado de la web, según el código rev
 
 | Guía | Qué explica |
 | --- | --- |
+| [Assessment actual](ASSESSMENT-2026-09-23.md) | Hallazgos, correcciones de seguridad/fiabilidad y límites de verificación |
 | [Proyecto](PROJECT.md) | Producto, recorrido del usuario, responsabilidades y límites |
 | [Arquitectura](ARCHITECTURE.md) | Topología, secuencia de llamada, estados, audio, datos, seguridad y recuperación |
 | [API](API.md) | Rutas, identidad firmada, datos, errores y callbacks |

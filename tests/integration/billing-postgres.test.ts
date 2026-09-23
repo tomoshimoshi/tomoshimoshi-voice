@@ -68,6 +68,23 @@ const id = await ensureUser({
   email: "concurrent@example.test",
   emailVerified: true,
 });
+
+test("concurrent new checkout keys cannot exceed the durable per-account quota", async () => {
+  const owner = await ensureUser({ sub: `quota|${randomUUID()}`, email: "quota@example.test", emailVerified: true });
+  let created = 0;
+  const provider: PaymentProvider = {
+    async createCheckout(payment) {
+      created++;
+      return { id: `cs_test_${payment.id}`, url: `https://checkout.stripe.com/c/pay/${payment.id}` };
+    },
+    async confirmation() { throw new Error("No payment made in quota test"); },
+  };
+  const results = await Promise.allSettled(Array.from({length:20}, () => checkout(owner, "credit_1000", randomUUID(), provider)));
+  assert.equal(results.filter(r => r.status === "fulfilled").length, 10);
+  for (const result of results) if (result.status === "rejected") assert.match(result.reason.message, /CHECKOUT_RATE_LIMIT/);
+  assert.equal(created, 10);
+  assert.equal((await walletSummary(owner)).available, "0");
+});
 await saveProfile(
   { ...defaultProfile, firstName: "Concurrent", lastName: "Fixture" },
   id,

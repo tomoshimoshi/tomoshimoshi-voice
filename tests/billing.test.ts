@@ -63,6 +63,22 @@ const provider: PaymentProvider = {
     return c;
   },
 };
+
+test("checkout quota is durable, account-scoped and preserves retries at the limit", async () => {
+  const id = await user();
+  const key = randomUUID();
+  const original = await checkout(id, "credit_1000", key, provider);
+  await Promise.all(Array.from({ length: 9 }, () => checkout(id, "credit_1000", randomUUID(), provider)));
+  await assert.rejects(checkout(id, "credit_1000", randomUUID(), provider), /CHECKOUT_RATE_LIMIT/);
+  assert.deepEqual(await checkout(id, "credit_1000", key, provider), original);
+  await assert.rejects(checkout(id, "credit_2000", key, provider), /IDEMPOTENCY_CONFLICT/);
+  await checkout(await user(), "credit_1000", randomUUID(), provider);
+  const oldUser = await user();
+  await testDatabase.query(`INSERT INTO payments(id,user_id,provider,provider_price_id,amount,currency,package_code,request_key,livemode,created_at)
+    SELECT gen_random_uuid(),$1,'stripe','price_1000',1000,'JPY','credit_1000',gen_random_uuid(),false,now()-interval '31 minutes'
+    FROM generate_series(1,10)`, [oldUser]);
+  await checkout(oldUser, "credit_1000", randomUUID(), provider);
+});
 async function user() {
   const id = await ensureUser({
     sub: `test|${randomUUID()}`,

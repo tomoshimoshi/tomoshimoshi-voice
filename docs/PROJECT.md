@@ -15,7 +15,7 @@ Casos incluidos: pedir una cita, reservar una mesa, pedir información, hacer se
 | [tomoshimoshi](https://github.com/tomoshimoshi/tomoshimoshi) | Interfaz Next.js, Auth0, preparación de llamadas y proxy autenticado `/api/*` | Vercel |
 | [tomoshimoshi-voice](https://github.com/tomoshimoshi/tomoshimoshi-voice) | API de negocio, sesiones de voz, proveedores, persistencia, saldo y cobros | Railway, proceso Node persistente |
 
-Neon almacena los datos. Auth0 identifica al usuario. Telnyx conecta con el teléfono; OpenAI genera la conversación y procesa las transcripciones. Stripe gestiona Checkout y eventos de recarga; el código de esta versión solo admite su modo de prueba.
+Neon almacena los datos. Auth0 identifica al usuario. Telnyx conecta con el teléfono; OpenAI genera la conversación y procesa las transcripciones. Stripe gestiona Checkout y eventos de recarga; el código admite modos test y live con claves, precios, eventos y base coherentes; en producción el modo predeterminado es live.
 
 La web se comunica con voz mediante HTTPS y no importa su código en ejecución. Las carpetas `lib/` contienen copias de algunos modelos y utilidades comunes; todavía no existe un paquete compartido publicado.
 

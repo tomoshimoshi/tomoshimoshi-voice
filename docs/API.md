@@ -113,3 +113,11 @@ Las respuestas fallidas usan `{ "error": "CODIGO" }`. La clasificación HTTP imp
 `readiness.ready` combina presencia de configuración de telefonía, `LIVE_CALLS_ENABLED`, callback HTTPS, recuperación y salud de persistencia. No valida las credenciales contra los proveedores, el saldo individual ni Stripe. `/healthz=200` y `ready=true` no sustituyen una prueba de audio.
 
 Los webhooks pueden repetirse y llegar desordenados; no duplicar manualmente operaciones de saldo para compensarlos. Una cancelación puede mantener un cuelgue pendiente si Telnyx no lo confirma. Consultar el estado y el procedimiento de [operaciones](OPERATIONS.md).
+
+## Límites y errores adicionales · revisión 2026-09-23
+
+Después de verificar la identidad, la API aplica 180 peticiones/minuto por `sub`; consultar pagos admite 20/minuto por cuenta. Responder/cancelar usa un presupuesto independiente de 60/minuto para no competir con el polling. Devuelve `429 API_RATE_LIMIT` y `Retry-After: 60`. Es un límite en memoria de un worker único, que se reinicia con el proceso y no sustituye protección contra inundación de tráfico en el proveedor.
+
+Checkout admite 10 claves nuevas por cuenta en 30 minutos, comprobadas bajo el bloqueo transaccional del usuario en PostgreSQL (`429 CHECKOUT_RATE_LIMIT`). Las claves existentes conservan su comportamiento idempotente; nunca se crea saldo por una redirección del navegador. IDs de recurso malformados devuelven `400 INVALID_INPUT`.
+
+El proxy web solo permite el método de cada operación y nunca sigue redirecciones del worker. `/profile` solo acepta PUT; `/contacts/remove`, `/billing/checkout`, `/calls/:id/answer` y `/calls/:id/cancel` solo aceptan POST. Los GET de salud/callbacks no usan la identidad de navegador.

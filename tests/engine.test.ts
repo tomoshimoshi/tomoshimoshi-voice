@@ -140,6 +140,28 @@ test("persistent state, concurrency guard, question correlation and cancellation
     /CALL_ENDED/,
   );
 });
+
+test("malformed Realtime audio cannot escape the callback and crash other calls", async () => {
+  const call = await engine.createCall(input, randomUUID(), userId);
+  const phone = new FakeSocket(), ai = new FakeSocket();
+  engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+  phone.event({event:"start",start:{call_control_id:"test-control-id",media_format:{encoding:"PCMU",sample_rate:8000}}});
+  assert.doesNotThrow(() => ai.event({type:"response.output_audio.delta",item_id:"bad-audio",delta:{invalid:true}}));
+  await engine.endCall(call.id, "failed");
+  assert.equal((await storedCall(call.id))?.error, "PROVIDER_ERROR");
+  assert.equal(engine.sessions.has(call.id), false);
+});
+
+test("pre-session media buffering is bounded by bytes as well as frame count", async () => {
+  const call = await engine.createCall(input, randomUUID(), userId);
+  const phone = new FakeSocket(), ai = new FakeSocket();
+  engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+  phone.event({event:"start",start:{call_control_id:"test-control-id",media_format:{encoding:"PCMU",sample_rate:8000}}});
+  for (let i=0; i<3; i++) phone.event({event:"media",media:{track:"inbound",payload:"A".repeat(512*1024)}});
+  await engine.endCall(call.id, "failed");
+  assert.equal((await storedCall(call.id))?.error, "AUDIO_BACKPRESSURE");
+  assert.equal(engine.sessions.has(call.id), false);
+});
 test("live bridge relays audio, asks the user, resumes the same session and completes", async () => {
   await store.saveProfile(
     {

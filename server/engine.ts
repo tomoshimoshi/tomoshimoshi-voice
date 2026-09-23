@@ -418,6 +418,7 @@ export function attachMedia(
     outputBytes = 0,
     playbackComplete = true;
   const queued: string[] = [];
+  let queuedBytes = 0;
   const interruptedItems = new Set<string>();
   const handledTools = new Set<string>();
   const handledTurns = new Set<string>();
@@ -493,7 +494,7 @@ export function attachMedia(
           return fail("UNSUPPORTED_AUDIO");
         if (s.controlId && event.start.call_control_id !== s.controlId)
           return fail("CONNECTION_LOST");
-        s.controlId = event.start.call_control_id;
+        s.controlId = z.string().min(1).max(4096).parse(event.start.call_control_id);
         void saveControl(id, s.controlId!).catch(() =>
           fail("SERVICE_UNAVAILABLE"),
         );
@@ -538,189 +539,192 @@ export function attachMedia(
         );
         ai.on("message", (raw) => {
           if (s.stopping || terminal(getCall(id)!.status)) return;
-          let e;
           try {
-            e = JSON.parse(raw.toString());
-          } catch {
-            return fail("PROVIDER_ERROR");
-          }
-          if (e.type === "session.updated" && !ready) {
-            ready = true;
-            queued.forEach((payload) =>
-              send({ type: "input_audio_buffer.append", audio: payload }),
-            );
-            queued.length = 0;
-            s.requestResponse?.("start");
-          }
-          if (
-            e.type === "input_audio_buffer.committed" &&
-            e.item_id &&
-            !handledTurns.has(e.item_id)
-          ) {
-            handledTurns.add(e.item_id);
-            s.toolFailures = 0;
-            s.requestResponse?.("turn");
-          }
-          if (e.type === "response.output_audio.delta") {
-            if (interruptedItems.has(e.item_id)) return;
-            if (outputItem !== e.item_id) {
-              outputItem = e.item_id;
-              outputStarted = Date.now();
-              outputBytes = 0;
+            const e = JSON.parse(raw.toString());
+            if (!e || typeof e.type !== "string") return fail("PROVIDER_ERROR");
+            if (e.type === "session.updated" && !ready) {
+              ready = true;
+              queued.forEach((payload) =>
+                send({ type: "input_audio_buffer.append", audio: payload }),
+              );
+              queued.length = 0;
+              queuedBytes = 0;
+              s.requestResponse?.("start");
             }
-            outputBytes += Buffer.from(e.delta, "base64").length;
-            playbackComplete = false;
-            sendPhone({ event: "media", media: { payload: e.delta } });
-          }
-          if (e.type === "response.output_audio.done")
-            sendPhone({ event: "mark", mark: { name: outputItem } });
-          if (
-            e.type === "input_audio_buffer.speech_started" &&
-            outputItem &&
-            !playbackComplete
-          ) {
-            sendPhone({ event: "clear" });
-            send({
-              type: "conversation.item.truncate",
-              item_id: outputItem,
-              content_index: 0,
-              audio_end_ms: Math.max(
-                0,
-                Math.min(
-                  Date.now() - outputStarted,
-                  Math.floor(outputBytes / 8),
+            if (
+              e.type === "input_audio_buffer.committed" &&
+              e.item_id &&
+              !handledTurns.has(e.item_id)
+            ) {
+              handledTurns.add(e.item_id);
+              s.toolFailures = 0;
+              s.requestResponse?.("turn");
+            }
+            if (e.type === "response.output_audio.delta") {
+              if (interruptedItems.has(e.item_id)) return;
+              if (outputItem !== e.item_id) {
+                outputItem = e.item_id;
+                outputStarted = Date.now();
+                outputBytes = 0;
+              }
+              outputBytes += Buffer.from(e.delta, "base64").length;
+              playbackComplete = false;
+              sendPhone({ event: "media", media: { payload: e.delta } });
+            }
+            if (e.type === "response.output_audio.done")
+              sendPhone({ event: "mark", mark: { name: outputItem } });
+            if (
+              e.type === "input_audio_buffer.speech_started" &&
+              outputItem &&
+              !playbackComplete
+            ) {
+              sendPhone({ event: "clear" });
+              send({
+                type: "conversation.item.truncate",
+                item_id: outputItem,
+                content_index: 0,
+                audio_end_ms: Math.max(
+                  0,
+                  Math.min(
+                    Date.now() - outputStarted,
+                    Math.floor(outputBytes / 8),
+                  ),
                 ),
-              ),
-            });
-            const item = outputItem;
-            interruptedItems.add(item);
-            update(id, (c) =>
-              c.transcript
-                .filter((x) => x.id === item)
-                .forEach((x) => (x.interrupted = true)),
-            );
-            outputItem = "";
-            playbackComplete = true;
-          }
-          if (
-            e.type ===
-              "conversation.item.input_audio_transcription.completed" &&
-            e.transcript
-          )
-            append(id, "recipient", e.transcript, {}, e.item_id);
-          if (
-            e.type === "response.output_audio_transcript.done" &&
-            e.transcript
-          ) {
-            const entry = append(id, "agent", e.transcript, {}, e.item_id);
-            update(id, (c) => {
-              const line = c.transcript.find((x) => x.id === entry);
-              if (line) line.interrupted = interruptedItems.has(e.item_id);
-            });
-          }
-          if (e.type === "response.created") s.responseActive = true;
-          if (e.type === "response.done") {
-            events = events
-              .then(async () => {
-                if (s.stopping || terminal(getCall(id)!.status)) return;
-                if (
-                  e.response?.status === "failed" ||
-                  e.response?.status === "incomplete"
-                ) {
-                  fail("PROVIDER_ERROR");
-                  return;
-                }
-                const output =
-                  e.response?.status === "cancelled" || s.finishing
-                    ? []
-                    : e.response?.output || [];
-                for (const item of output) {
-                  if (item.type !== "function_call") continue;
-                  if (handledTools.has(item.call_id)) continue;
-                  handledTools.add(item.call_id);
-                  try {
-                    if (item.name === "ask_user") {
-                      const args = questionArgs.parse(
-                        JSON.parse(item.arguments),
-                      );
-                      askUser(id, args.question, args.kind);
-                      lastHoldAt = Date.now();
-                      s.pendingResponse = false;
-                      send({
-                        type: "conversation.item.create",
-                        item: {
-                          type: "function_call_output",
-                          call_id: item.call_id,
-                          output: JSON.stringify({
-                            status: "pending",
-                            instruction:
-                              "User has not answered. Wait for a separate app user message. The server will handle hold acknowledgements. Do not speak again or call tools until prompted; never guess.",
-                          }),
-                        },
-                      });
-                    } else if (item.name === "finish_call") {
-                      const result = resultArgs.parse(
-                        JSON.parse(item.arguments),
-                      );
-                      const c = getCall(id)!;
-                      if (c.question && !c.question.answered)
-                        throw new Error("Pending user answer");
-                      s.finishing = true;
-                      s.pendingResponse = false;
-                      update(id, (c) => (c.result = result));
-                      send({
-                        type: "conversation.item.create",
-                        item: {
-                          type: "function_call_output",
-                          call_id: item.call_id,
-                          output: '{"status":"ending"}',
-                        },
-                      });
-                      later(
-                        id,
-                        Math.max(
-                          1500,
-                          Math.min(
-                            30000,
-                            outputBytes / 8 -
-                              (Date.now() - outputStarted) +
-                              1000,
-                          ),
-                        ),
-                        () => void endCall(id, "completed"),
-                      );
-                    }
-                  } catch {
-                    s.toolFailures = (s.toolFailures || 0) + 1;
-                    if (s.toolFailures > 2) {
-                      fail("PROVIDER_ERROR");
-                      return;
-                    }
-                    send({
-                      type: "conversation.item.create",
-                      item: {
-                        type: "function_call_output",
-                        call_id: item.call_id,
-                        output:
-                          '{"error":"Invalid arguments or pending question. Correct the request; never assume approval."}',
-                      },
-                    });
-                    s.pendingResponse = true;
+              });
+              const item = outputItem;
+              interruptedItems.add(item);
+              update(id, (c) =>
+                c.transcript
+                  .filter((x) => x.id === item)
+                  .forEach((x) => (x.interrupted = true)),
+              );
+              outputItem = "";
+              playbackComplete = true;
+            }
+            if (
+              e.type ===
+                "conversation.item.input_audio_transcription.completed" &&
+              e.transcript
+            )
+              append(id, "recipient", e.transcript, {}, e.item_id);
+            if (
+              e.type === "response.output_audio_transcript.done" &&
+              e.transcript
+            ) {
+              const entry = append(id, "agent", e.transcript, {}, e.item_id);
+              update(id, (c) => {
+                const line = c.transcript.find((x) => x.id === entry);
+                if (line) line.interrupted = interruptedItems.has(e.item_id);
+              });
+            }
+            if (e.type === "response.created") s.responseActive = true;
+            if (e.type === "response.done") {
+              events = events
+                .then(async () => {
+                  if (s.stopping || terminal(getCall(id)!.status)) return;
+                  if (
+                    e.response?.status === "failed" ||
+                    e.response?.status === "incomplete"
+                  ) {
+                    fail("PROVIDER_ERROR");
+                    return;
                   }
-                }
-                s.responseActive = false;
-                if (s.pendingResponse) s.requestResponse?.("retry");
-              })
-              .catch(() => fail("PROVIDER_ERROR"));
-          }
-          if (
-            e.type === "error" &&
-            ![
-              "response_cancel_not_active",
-              "conversation_already_has_active_response",
-            ].includes(e.error?.code)
-          )
+                  const output =
+                    e.response?.status === "cancelled" || s.finishing
+                      ? []
+                      : e.response?.output || [];
+                  for (const item of output) {
+                    if (item.type !== "function_call") continue;
+                    if (handledTools.has(item.call_id)) continue;
+                    handledTools.add(item.call_id);
+                    try {
+                      if (item.name === "ask_user") {
+                        const args = questionArgs.parse(
+                          JSON.parse(item.arguments),
+                        );
+                        askUser(id, args.question, args.kind);
+                        lastHoldAt = Date.now();
+                        s.pendingResponse = false;
+                        send({
+                          type: "conversation.item.create",
+                          item: {
+                            type: "function_call_output",
+                            call_id: item.call_id,
+                            output: JSON.stringify({
+                              status: "pending",
+                              instruction:
+                                "User has not answered. Wait for a separate app user message. The server will handle hold acknowledgements. Do not speak again or call tools until prompted; never guess.",
+                            }),
+                          },
+                        });
+                      } else if (item.name === "finish_call") {
+                        const result = resultArgs.parse(
+                          JSON.parse(item.arguments),
+                        );
+                        const c = getCall(id)!;
+                        if (c.question && !c.question.answered)
+                          throw new Error("Pending user answer");
+                        s.finishing = true;
+                        s.pendingResponse = false;
+                        update(id, (c) => (c.result = result));
+                        send({
+                          type: "conversation.item.create",
+                          item: {
+                            type: "function_call_output",
+                            call_id: item.call_id,
+                            output: '{"status":"ending"}',
+                          },
+                        });
+                        later(
+                          id,
+                          Math.max(
+                            1500,
+                            Math.min(
+                              30000,
+                              outputBytes / 8 -
+                                (Date.now() - outputStarted) +
+                                1000,
+                            ),
+                          ),
+                          () => void endCall(id, "completed"),
+                        );
+                      }
+                    } catch {
+                      s.toolFailures = (s.toolFailures || 0) + 1;
+                      if (s.toolFailures > 2) {
+                        fail("PROVIDER_ERROR");
+                        return;
+                      }
+                      send({
+                        type: "conversation.item.create",
+                        item: {
+                          type: "function_call_output",
+                          call_id: item.call_id,
+                          output:
+                            '{"error":"Invalid arguments or pending question. Correct the request; never assume approval."}',
+                        },
+                      });
+                      s.pendingResponse = true;
+                    }
+                  }
+                  s.responseActive = false;
+                  if (s.pendingResponse) s.requestResponse?.("retry");
+                })
+                .catch(() => fail("PROVIDER_ERROR"));
+            }
+            if (
+              e.type === "error" &&
+              ![
+                "response_cancel_not_active",
+                "conversation_already_has_active_response",
+              ].includes(e.error?.code)
+            )
+              fail("PROVIDER_ERROR");
+          } catch {
+            // Provider messages are external input. A malformed audio/event
+            // payload must terminate this call, never crash the shared worker.
             fail("PROVIDER_ERROR");
+          }
         });
         ai.on("error", () => fail("PROVIDER_ERROR"));
         ai.on("close", () => {
@@ -734,7 +738,10 @@ export function attachMedia(
         const payload = event.media?.payload;
         if (typeof payload !== "string") return;
         if (ready) send({ type: "input_audio_buffer.append", audio: payload });
-        else if (queued.length < 250) queued.push(payload);
+        else if (queued.length < 250 && queuedBytes + payload.length <= 1024 * 1024) {
+          queued.push(payload);
+          queuedBytes += payload.length;
+        } else fail("AUDIO_BACKPRESSURE");
       } else if (event.event === "mark" && event.mark?.name === outputItem)
         playbackComplete = true;
       else if (event.event === "stop")

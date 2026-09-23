@@ -240,3 +240,28 @@ test("billing HTTP boundary rejects unsigned webhooks and browser-supplied monet
     ["1000", "2000", "5000"],
   );
 });
+
+test("malformed resource IDs are client errors rather than database failures", async () => {
+  for (const path of ["calls", "billing/payments"]) {
+    const response = await fetch(`${base}/${path}/${"-".repeat(36)}`, { headers: headers("alice") });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, "INVALID_INPUT");
+  }
+});
+
+test("exhausting the read quota leaves a separate budget for call controls", async () => {
+  const identity = headers("quota-controls");
+  for (let i = 0; i < 180; i++) {
+    assert.equal((await fetch(`${base}/not-found`, { headers: identity })).status, 404);
+  }
+  const limited = await fetch(`${base}/state`, { headers: identity });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get("Retry-After"), "60");
+  for (const action of ["answer", "cancel"]) {
+    const response = await fetch(`${base}/calls/${randomUUID()}/${action}`, {
+      method: "POST", headers: identity, body: "{}",
+    });
+    // Owner lookup still executes: an absent call is 404, never a read-quota 429.
+    assert.equal(response.status, 404);
+  }
+});

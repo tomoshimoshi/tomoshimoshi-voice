@@ -27,6 +27,16 @@ export async function checkout(
   const payment = await transaction(async (tx) => {
     // Serialize duplicate checkout requests for the same account/key.
     await tx.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [userId]);
+    const prior = await tx.query(
+      "SELECT 1 FROM payments WHERE user_id=$1 AND request_key=$2", [userId, key],
+    );
+    if (!prior.rows.length) {
+      const recent = await tx.query(
+        "SELECT count(*)::int AS count FROM payments WHERE user_id=$1 AND created_at > now()-interval '30 minutes'",
+        [userId],
+      );
+      if (recent.rows[0].count >= 10) throw new Error("CHECKOUT_RATE_LIMIT");
+    }
     if ((await tx.query(`SELECT 1 FROM payment_reversals r JOIN payments p ON p.id=r.payment_id
       WHERE p.user_id=$1 AND r.required_amount>r.debited_amount LIMIT 1`, [userId])).rows.length)
       throw new Error("PAYMENT_REVIEW_REQUIRED");
