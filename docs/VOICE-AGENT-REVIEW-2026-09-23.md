@@ -81,3 +81,22 @@ No se realizó otra llamada telefónica, no se capturó audio de personas ni se 
 El despliegue de Voice requiere una ventana sin llamadas activas y detener el worker anterior antes de iniciar el nuevo, conforme a `AGENTS.md` y `docs/RAILWAY.md`. Después: comprobar salud, hacer una llamada controlada y comparar tiempos con la línea base anterior.
 
 Fuentes: [Realtime 2.1](https://developers.openai.com/api/docs/models/gpt-realtime-2.1), [Realtime y contexto por respuesta](https://developers.openai.com/api/docs/guides/realtime-conversations), [prompting de voz](https://developers.openai.com/api/docs/guides/voice-prompting), [GPT-4.1 mini](https://developers.openai.com/api/docs/models/gpt-4.1-mini), [reproducción y marcas de Telnyx](https://developers.telnyx.com/docs/voice/programmable-voice/media-streaming).
+
+## Despliegue posterior autorizado — 23 de septiembre de 2026
+
+El usuario confirmó que no había llamadas activas y autorizó publicar ambos servicios.
+Vercel publicó `3f44989` en producción (despliegue `7Da6vPHKzEwPLNMVGLoNt9nnQfta`).
+Railway publicó `5280c09` (despliegue `13001eee-93bf-4504-b16a-2f3f5a1b7c11`),
+con arranque registrado a las 15:44:40 JST y estado `SUCCESS`.
+Los dos overrides de modelos indicados arriba se guardaron antes de ese despliegue.
+
+Se detuvo el worker anterior antes de sustituirlo. Un intento intermedio con
+`Redeploy` seleccionó el código anterior; se canceló y se utilizó
+`Deploy latest commit`, verificando el SHA. El procedimiento de Railway ya
+documenta esta diferencia.
+
+Comprobaciones en producción: `/healthz` respondió 200 con `status: ok`, `/state`
+sin credenciales respondió 401, y el dashboard autenticado volvió a cargar
+historial y saldo sin el error de mantenimiento. No se hizo una llamada real
+adicional ni se cambiaron las regiones de infraestructura. La validación acústica
+posterior y la medición de latencia durante una nueva llamada siguen pendientes.

@@ -128,7 +128,10 @@ Para cambios de código, variables o rollback:
 2. Detener el despliegue activo de voz y esperar a su apagado completo.
    En el menú del despliegue, `Remove` lo detiene y lo mueve al historial;
    después se puede volver a desplegar. No borrar el servicio ni la base de datos.
-3. Desplegar la nueva revisión/configuración con una única réplica.
+3. Desplegar la nueva revisión/configuración con una única réplica. Para código
+   nuevo, abrir el servicio y usar `Cmd+K` → `Deploy latest commit` después de
+   publicar `main`. `Redeploy` reutiliza el commit anterior; no obtiene el nuevo
+   código. Comprobar el SHA del despliegue antes de darlo por actualizado.
 4. Comprobar `/healthz` y el acceso desde la web. Hay una interrupción breve de la
    API durante la sustitución. Un reinicio con llamadas activas las interrumpe.
 
