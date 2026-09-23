@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { signIdentity } from "../lib/internal-identity";
 // Provider credentials and dotenv loading are disabled for the whole process.
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
@@ -246,6 +246,52 @@ test("malformed resource IDs are client errors rather than database failures", a
     const response = await fetch(`${base}/${path}/${"-".repeat(36)}`, { headers: headers("alice") });
     assert.equal(response.status, 400);
     assert.equal((await response.json()).error, "INVALID_INPUT");
+  }
+});
+
+test("signed pre-answer cancellation webhook releases credit after app hangup and tolerates retries", async () => {
+  const { ensureUser, saveProfile, defaultProfile, reserveCall } = await import("../server/store");
+  const { transaction } = await import("../server/transaction");
+  const { credit } = await import("../server/wallet");
+  const identity = headers("cancel-before-answer");
+  const userId = await ensureUser({ sub: "cancel-before-answer", email: "cancel-before-answer@example.test", emailVerified: true });
+  await saveProfile({ ...defaultProfile, firstName: "Test", lastName: "Caller" }, userId);
+  await transaction(tx => credit(tx, userId, 557n, { type: "test", id: randomUUID(), key: randomUUID() }));
+  const callId = randomUUID();
+  await reserveCall({
+    id: callId, phone: "+817012345678", objective: "Ask opening hours", context: "",
+    constraints: "", language: "ja", mode: "live", shareProfile: false,
+    scenario: "inquiry", status: "cancelled", createdAt: new Date().toISOString(),
+    endedAt: new Date().toISOString(), transcript: [], uiLanguage: "en",
+  }, userId, randomUUID());
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const previousKey = process.env.TELNYX_PUBLIC_KEY;
+  process.env.TELNYX_PUBLIC_KEY = publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const body = JSON.stringify({ data: {
+    id: randomUUID(), event_type: "call.hangup", occurred_at: new Date().toISOString(),
+    payload: {
+      call_control_id: "cancelled-control", client_state: Buffer.from(callId).toString("base64"),
+      hangup_cause: "normal_clearing", sip_hangup_cause: "487",
+    },
+  } });
+  const signature = sign(null, Buffer.from(`${timestamp}|${body}`), privateKey).toString("base64");
+  try {
+    const unsigned = await fetch(`${base}/webhooks/telnyx`, { method: "POST", body });
+    assert.equal(unsigned.status, 401);
+    assert.equal((await (await fetch(`${base}/wallet`, { headers: identity })).json()).reserved, "557");
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`${base}/webhooks/telnyx`, {
+        method: "POST", body,
+        headers: { "telnyx-timestamp": timestamp, "telnyx-signature-ed25519": signature },
+      });
+      assert.equal(response.status, 200);
+      const wallet = await (await fetch(`${base}/wallet`, { headers: identity })).json();
+      assert.equal(wallet.available, "557");
+      assert.equal(wallet.reserved, "0");
+    }
+  } finally {
+    process.env.TELNYX_PUBLIC_KEY = previousKey;
   }
 });
 

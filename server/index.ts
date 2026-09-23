@@ -174,6 +174,10 @@ const server = createServer(async (req, res) => {
             typeof event.payload.hangup_cause === "string"
               ? event.payload.hangup_cause
               : undefined,
+          sipHangupCause:
+            typeof event.payload.sip_hangup_cause === "string"
+              ? event.payload.sip_hangup_cause
+              : undefined,
         });
       }
       if (await seenEvent(event.id)) return json(res, 200, { ok: true });

@@ -137,6 +137,7 @@ export async function observeCallEvent(input: {
   at: string;
   controlId: string;
   cause?: string;
+  sipHangupCause?: string;
 }) {
   if (!["call.answered", "call.hangup", "call.initiated"].includes(input.type))
     return;
@@ -189,7 +190,14 @@ export async function observeCallEvent(input: {
         "UPDATE call_billing SET ended_at=$2,termination_confirmed=true,status='pending' WHERE call_id=$1",
         [input.callId, input.at],
       );
-      if (row.connected_at || unconnectedCauses.has(input.cause || ""))
+      // Telnyx can report a pre-answer cancellation as normal_clearing with
+      // SIP 487 (the INVITE was terminated). Normal clearing alone is ambiguous.
+      // A recorded answer still takes precedence and bills its connected time.
+      if (
+        row.connected_at ||
+        unconnectedCauses.has(input.cause || "") ||
+        input.sipHangupCause === "487"
+      )
         return settle(
           tx,
           input.callId,

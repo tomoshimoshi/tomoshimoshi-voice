@@ -515,6 +515,64 @@ test("confirmed unanswered call releases all credit without a usage charge", asy
   assert.equal((await getCall(c.id))?.billing?.customerChargeJpy, "0");
   assert.equal((await balance(userId)).available, "1000");
 });
+test("hanging up before answer releases the entire reservation for Telnyx SIP 487, once", async () => {
+  const { userId, call: c } = await authorized(557n);
+  const ended = {
+    callId: c.id,
+    eventId: randomUUID(),
+    type: "call.hangup",
+    at: new Date().toISOString(),
+    controlId: "control",
+    cause: "normal_clearing",
+    sipHangupCause: "487",
+  };
+  await observeCallEvent(ended);
+  await observeCallEvent(ended);
+  await observeCallEvent({ ...ended, eventId: randomUUID() });
+  const saved = await getCall(c.id);
+  assert.equal(saved?.billing?.status, "settled");
+  assert.equal(saved?.billing?.durationSeconds, 0);
+  assert.equal(saved?.billing?.customerChargeJpy, "0");
+  assert.equal((await balance(userId)).available, "557");
+  assert.equal((await balance(userId)).reserved, "0");
+  assert.equal((await testDatabase.query(
+    "SELECT 1 FROM outbox_events WHERE event_type='call.charged' AND aggregate_id=$1", [c.id],
+  )).rows.length, 1);
+});
+test("normal clearing without SIP cancellation evidence waits for a delayed answer", async () => {
+  for (const sipHangupCause of [undefined, "200"]) {
+    const { userId, call: c } = await authorized();
+    const endedAt = new Date().toISOString();
+    await observeCallEvent({
+      callId: c.id, eventId: randomUUID(), type: "call.hangup",
+      at: endedAt, controlId: "control", cause: "normal_clearing", sipHangupCause,
+    });
+    assert.equal((await balance(userId)).reserved, "1000");
+    assert.equal((await getCall(c.id))?.billing?.status, "pending");
+    await observeCallEvent({
+      callId: c.id, eventId: randomUUID(), type: "call.answered",
+      at: new Date(Date.parse(endedAt) - 60000).toISOString(), controlId: "control",
+    });
+    assert.equal((await getCall(c.id))?.billing?.customerChargeJpy, "125");
+    assert.equal((await balance(userId)).available, "875");
+    assert.equal((await balance(userId)).reserved, "0");
+  }
+});
+test("a recorded answer still charges connected time when hangup includes SIP 487", async () => {
+  const { userId, call: c } = await authorized();
+  const endedAt = new Date().toISOString();
+  await observeCallEvent({
+    callId: c.id, eventId: randomUUID(), type: "call.answered",
+    at: new Date(Date.parse(endedAt) - 60000).toISOString(), controlId: "control",
+  });
+  await observeCallEvent({
+    callId: c.id, eventId: randomUUID(), type: "call.hangup",
+    at: endedAt, controlId: "control", cause: "normal_clearing", sipHangupCause: "487",
+  });
+  assert.equal((await getCall(c.id))?.billing?.customerChargeJpy, "125");
+  assert.equal((await balance(userId)).available, "875");
+  assert.equal((await balance(userId)).reserved, "0");
+});
 test("carrier overrun never overdraws; explicit waiver remains in financial audit", async () => {
   const { userId, call: c } = await authorized();
   const end = new Date().toISOString();
