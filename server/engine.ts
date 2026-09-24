@@ -31,6 +31,7 @@ import {
 import { readiness, safeEqual, isNumberAllowed } from "./security";
 import { markCallEnded } from "./calls/billing";
 import { billingLog } from "./billing/events";
+import { hangupReason, hangupStatus, type HangupDetails } from "./calls/end-reason";
 type Session = {
   token: string;
   controlId?: string;
@@ -602,6 +603,16 @@ export function attachMedia(
   const fail = (code: string) => {
     void endCall(id, "failed", code);
   };
+  let mediaEndPending = false;
+  const mediaEnded = () => {
+    if (s.stopping || mediaEndPending) return;
+    mediaEndPending = true;
+    // Media can stop before the signed hangup webhook. Give its cause priority.
+    // If no webhook arrives, still terminate the carrier call and release resources.
+    later(id, 2000, () => {
+      if (!s.stopping) fail("CONNECTION_LOST");
+    });
+  };
   later(id, 20000, () => {
     if (!ready) fail("CONNECTION_LOST");
   });
@@ -953,19 +964,16 @@ export function attachMedia(
         metric("playback_complete", { kind: responseKind });
         if (s.finishing && outputItem === goodbyeItem && !s.responseActive) finishAfterPlayback();
       }
-      else if (event.event === "stop")
-        void endCall(id, "completed").catch(() => fail("SERVICE_UNAVAILABLE"));
+      else if (event.event === "stop") mediaEnded();
       else if (event.event === "error") fail("PROVIDER_ERROR");
     } catch {
       fail("PROVIDER_ERROR");
     }
   });
-  socket.on("close", () => {
-    if (!s.stopping) fail("CONNECTION_LOST");
-  });
-  socket.on("error", () => fail("CONNECTION_LOST"));
+  socket.on("close", mediaEnded);
+  socket.on("error", mediaEnded);
 }
-export async function remoteHangup(id: string) {
+export async function remoteHangup(id: string, details: HangupDetails = {}) {
   const s = sessions.get(id);
   if (s) {
     s.controlId = undefined;
@@ -973,7 +981,25 @@ export async function remoteHangup(id: string) {
   }
   await flushCall(id);
   await clearControl(id);
-  await endCall(id, "completed");
+  // A late webhook can arrive after the media fallback has already persisted.
+  await s?.endTask;
+  const call = getCall(id) || await loadCall(id);
+  if (!call) return;
+  const reason = hangupReason(details, !!call.billing?.connectedAt ||
+    call.status === "connected" || call.status === "waiting" ||
+    call.transcript.some(line => line.role === "recipient"));
+  const successful = call.result?.outcome === "success";
+  if (terminal(call.status)) {
+    if (call.status === "cancelled" || successful ||
+        (call.error !== "CONNECTION_LOST" && call.error !== "CALL_ENDED_UNKNOWN") ||
+        reason === "CALL_ENDED_UNKNOWN") return;
+    call.error = reason;
+    call.status = hangupStatus(reason);
+    if (call.result) call.result.outcome = call.status === "failed" ? "failed" : "incomplete";
+    await persistCall(call);
+    return;
+  }
+  await endCall(id, successful ? "completed" : hangupStatus(reason), successful ? undefined : reason);
 }
 let recovering = false;
 export async function recoverOrphanedCalls() {

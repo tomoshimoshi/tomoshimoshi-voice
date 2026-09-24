@@ -192,7 +192,11 @@ const server = createServer(async (req, res) => {
           if (knownControl && knownControl !== event.payload.call_control_id)
             return json(res, 200, { ok: true });
           if (event.event_type === "call.hangup") {
-            await remoteHangup(id);
+            await remoteHangup(id, {
+              cause: typeof event.payload.hangup_cause === "string" ? event.payload.hangup_cause : undefined,
+              source: typeof event.payload.hangup_source === "string" ? event.payload.hangup_source : undefined,
+              sipCause: typeof event.payload.sip_hangup_cause === "string" ? event.payload.sip_hangup_cause : undefined,
+            });
           } else if (
             ["call.initiated", "call.answered"].includes(event.event_type)
           ) {

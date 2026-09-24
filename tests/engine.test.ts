@@ -694,3 +694,66 @@ for (const scenario of ["quoted differently", "no model quote", "late transcript
     }
   });
 }
+
+test("a recipient rejection webhook wins over a media close and is idempotent", async () => {
+  const c = await engine.createCall(input, randomUUID(), userId);
+  const phone = new FakeSocket();
+  engine.attachMedia(c.id, phone as unknown as WebSocket);
+  phone.close();
+  assert.equal(engine.sessions.get(c.id)?.stopping, undefined);
+  const details = { cause: "call_rejected", source: "callee", sipCause: "603" };
+  await engine.remoteHangup(c.id, details);
+  await engine.remoteHangup(c.id, details);
+  const result = await storedCall(c.id);
+  assert.equal(result?.error, "RECIPIENT_REJECTED");
+  assert.equal(result?.status, "failed");
+  assert.equal(engine.sessions.has(c.id), false);
+  assert.equal(await store.getControl(c.id), undefined);
+});
+
+test("a late signed reason corrects the media fallback without changing billing", async () => {
+  const c = await engine.createCall(input, randomUUID(), userId);
+  await engine.endCall(c.id, "failed", "CONNECTION_LOST");
+  const before = await storedCall(c.id);
+  await engine.remoteHangup(c.id, { cause: "user_busy", sipCause: "486" });
+  const after = await storedCall(c.id);
+  assert.equal(after?.error, "RECIPIENT_BUSY");
+  assert.deepEqual(after?.billing, before?.billing);
+  assert.equal(after?.endedAt, before?.endedAt);
+});
+
+test("a connected recipient hangup is incomplete, not a technical failure", async () => {
+  const c = await engine.createCall(input, randomUUID(), userId);
+  engine.update(c.id, call => { call.status = "connected"; });
+  await engine.remoteHangup(c.id, { cause: "normal_clearing", source: "callee" });
+  const result = await storedCall(c.id);
+  assert.equal(result?.status, "completed");
+  assert.equal(result?.result?.outcome, "incomplete");
+  assert.equal(result?.error, "RECIPIENT_HUNG_UP");
+});
+
+for (const scenario of ["cancelled", "technical", "success"] as const) {
+  test(`carrier reasons preserve ${scenario} outcomes`, async () => {
+    await testDatabase.query("UPDATE users SET last_call_at=NULL");
+    const c = await engine.createCall(input, randomUUID(), userId);
+    if (scenario === "success") engine.update(c.id, call => {
+      call.result = { outcome: "success", summary: "Booking confirmed", details: [] };
+    });
+    await engine.endCall(c.id, scenario === "cancelled" ? "cancelled" : scenario === "technical" ? "failed" : "completed", scenario === "technical" ? "PROVIDER_ERROR" : undefined);
+    const before = await storedCall(c.id);
+    await engine.remoteHangup(c.id, { cause: "normal_clearing", source: "callee" });
+    assert.deepEqual(await storedCall(c.id), before);
+  });
+}
+
+test("media stop without a carrier webhook still terminates and cleans up", async () => {
+  const c = await engine.createCall(input, randomUUID(), userId);
+  const phone = new FakeSocket();
+  engine.attachMedia(c.id, phone as unknown as WebSocket);
+  phone.event({ event: "stop" });
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  const result = await storedCall(c.id);
+  assert.equal(result?.error, "CONNECTION_LOST");
+  assert.equal(result?.status, "failed");
+  assert.equal(engine.sessions.has(c.id), false);
+});
