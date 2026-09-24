@@ -66,6 +66,8 @@ import { reconcilePayment, reconcilePayments } from "./billing/reconcile";
 import { observeCallEvent } from "./calls/billing";
 import { voiceListener } from "./listener";
 import { createRateLimiter } from "./rate-limit";
+import { createSupportService } from "./support";
+const submitSupport = createSupportService({ getCall });
 const allowRequest = createRateLimiter();
 const allowPaymentRefresh = createRateLimiter(20);
 const allowCallControl = createRateLimiter(60);
@@ -233,6 +235,11 @@ const server = createServer(async (req, res) => {
       return json(res, 429, { error: "API_RATE_LIMIT" });
     }
     const userId = await ensureUser(identity);
+    if (req.method === "POST" && url.pathname === "/support") {
+      const result = await submitSupport(userId, identity.email, JSON.parse(await body(req)));
+      if (result.status === 429) res.setHeader("Retry-After", "900");
+      return json(res, result.status, result.data);
+    }
     if (req.method === "GET" && url.pathname === "/wallet")
       return json(res, 200, await walletSummary(userId));
     if (req.method === "POST" && url.pathname === "/billing/checkout") {

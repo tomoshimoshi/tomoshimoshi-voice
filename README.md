@@ -67,6 +67,21 @@ Stripe admite `STRIPE_MODE=test|live`; en producción el modo predeterminado es 
 
 El servicio se extrajo del repositorio web en la revisión `5d4ff2a`; el primer commit independiente es `35e330b`. Esa extracción conservó sin cambios el código del worker, los scripts y las migraciones.
 
+## Contacto y reportes por correo
+
+`POST /support` recibe `{ kind: "bug" | "contact", message, locale, callId? }`
+con la identidad firmada habitual. Envía a `leodcastaneda@gmail.com` mediante
+SendGrid; `reply_to` es el correo autenticado. Configurar `SENDGRID_API_KEY`
+(permiso Mail Send) y `SENDGRID_FROM_EMAIL=contact@tomoshimoshi.com` en este servicio,
+con el dominio o remitente autenticado en SendGrid. Sin esas variables devuelve
+`503 SUPPORT_NOT_CONFIGURED` sin afectar las llamadas.
+
+Valida propiedad de la llamada, texto de 10–5000 caracteres y 5 intentos por
+cuenta cada 15 minutos. El correo incluye referencia/estado de la llamada, sin
+transcripciones ni números telefónicos. `202` indica aceptación de SendGrid,
+no entrega; los logs `support.queued` y `support.failed` permiten correlacionar
+el resultado con la referencia. Las pruebas simulan SendGrid y no envían correos.
+
 ## Reparto del trabajo y evaluación actual
 
 | Web (`tomoshimoshi`) | Voice (este repositorio) |

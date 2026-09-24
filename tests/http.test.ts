@@ -26,6 +26,8 @@ for (const name of [
   "TELNYX_PUBLIC_KEY",
   "PUBLIC_BASE_URL",
   "ALLOWED_PHONE_NUMBERS",
+  "SENDGRID_API_KEY",
+  "SENDGRID_FROM_EMAIL",
 ])
   process.env[name] = "";
 const probe = createServer();
@@ -69,6 +71,7 @@ test("HTTP API rejects absent, unsigned and forged identities even with an inter
     "contacts",
     "calls",
     "maps-config",
+    "support",
   ]) {
     assert.equal((await fetch(`${base}/${path}`)).status, 401);
     assert.equal(
@@ -90,6 +93,37 @@ test("HTTP API rejects absent, unsigned and forged identities even with an inter
       ).status,
       401,
     );
+  }
+});
+test("support HTTP uses the signed identity and never accepts another account's call", async () => {
+  const actualFetch = globalThis.fetch;
+  let sent = 0;
+  process.env.SENDGRID_API_KEY = "test-only-sendgrid-key";
+  process.env.SENDGRID_FROM_EMAIL = "contact@example.test";
+  const mocked = mock.method(globalThis, "fetch", async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(url) !== "https://api.sendgrid.com/v3/mail/send") return actualFetch(url, init);
+    sent++;
+    const payload = JSON.parse(String(init?.body));
+    assert.equal(payload.reply_to.email, "support-user@example.test");
+    return new Response(null, { status: 202 });
+  });
+  try {
+    const input = { kind: "bug", locale: "es", message: "La llamada no conectó correctamente." };
+    const post = (data: unknown, authenticated = true) => fetch(`${base}/support`, {
+      method: "POST", headers: authenticated ? headers("support-user") : {}, body: JSON.stringify(data),
+    });
+    assert.equal((await post(input, false)).status, 401);
+    assert.equal((await post({ ...input, email: "forged@example.test" })).status, 400);
+    assert.equal((await post({ ...input, callId: randomUUID() })).status, 404);
+    assert.equal(sent, 0);
+    const response = await post(input);
+    assert.equal(response.status, 202);
+    assert.equal((await response.json()).queued, true);
+    assert.equal(sent, 1);
+  } finally {
+    mocked.mock.restore();
+    process.env.SENDGRID_API_KEY = "";
+    process.env.SENDGRID_FROM_EMAIL = "";
   }
 });
 test("HTTP onboarding saves only the authenticated profile and enforces completion before dialing", async () => {
