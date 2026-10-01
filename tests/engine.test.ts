@@ -757,3 +757,308 @@ test("media stop without a carrier webhook still terminates and cleans up", asyn
   assert.equal(result?.status, "failed");
   assert.equal(engine.sessions.has(c.id), false);
 });
+
+async function receptionCall() {
+  const call = await engine.createCall({ ...input, language: "en" }, randomUUID(), userId);
+  const phone = new FakeSocket(), ai = new FakeSocket();
+  engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+  phone.event({ event: "start", start: { call_control_id: "test-control-id", media_format: { encoding: "PCMU", sample_rate: 8000 } } });
+  ai.emit("open");
+  ai.event({ type: "session.updated" });
+  const done = async (name?: string, args?: unknown) => {
+    ai.event({ type: "response.done", response: { status: "completed", output: name
+      ? [{ type: "function_call", name, arguments: JSON.stringify(args), call_id: randomUUID() }] : [] } });
+    await settle();
+    await settle();
+  };
+  const turn = (transcript: string) => {
+    const item_id = randomUUID();
+    ai.event({ type: "input_audio_buffer.speech_started", item_id });
+    ai.event({ type: "input_audio_buffer.speech_stopped" });
+    ai.event({ type: "input_audio_buffer.committed", item_id });
+    ai.event({ type: "conversation.item.input_audio_transcription.completed", item_id, transcript });
+  };
+  const state = (state: string, message = "", details: string[] = []) =>
+    done("handle_phone_system", { state, message, details });
+  const responses = () => ai.sent.filter(event => event.type === "response.create");
+  await done();
+  return { call, phone, ai, done, turn, state, responses };
+}
+
+test("iPhone screening speaks the reason once, stays silent through announcements and reintroduces to the human", async () => {
+  const { call, phone, ai, done, turn, state, responses } = await receptionCall();
+  try {
+    turn("Hi, if you record your name and reason for calling, I'll see if this person is available.");
+    const reason = "I am ToMoshiMoshi, an AI assistant calling to ask about a dental cleaning appointment.";
+    await state("screening", reason);
+    assert.deepEqual(responses().at(-1)?.response.input, [], "screening audio cannot expose the full task or profile");
+    assert.match(responses().at(-1)?.response.instructions, /calling to ask about a dental cleaning appointment/);
+    assert.equal(responses().at(-1)?.response.tool_choice, "none");
+    await done();
+    const beforeSilence = responses().length;
+    engine.sessions.get(call.id)!.requestResponse!("hold");
+    assert.equal(responses().length, beforeSilence, "reminders cannot fill the screening silence");
+    for (const announcement of ["Thanks.", "Please stay on the line.", "Please."]) {
+      turn(announcement);
+      assert.deepEqual(responses().at(-1)?.response.output_modalities, ["text"]);
+      assert.deepEqual(responses().at(-1)?.response.tools.map((tool: { name: string }) => tool.name), ["handle_phone_system"]);
+      const phoneEvents = phone.sent.length;
+      ai.event({ type: "response.output_audio.delta", item_id: randomUUID(), delta: "abcd" });
+      assert.equal(phone.sent.length, phoneEvents, "unexpected audio during classification is never played");
+      const count = responses().length;
+      await state("wait");
+      assert.equal(responses().length, count, "the tool result must not trigger another spoken turn");
+    }
+    turn("Record your name and reason for calling.");
+    const count = responses().length;
+    await state("screening", reason);
+    assert.equal(responses().length, count, "a repeated screening decision does not replay the reason");
+    turn("Huh?");
+    await state("human");
+    assert.match(responses().at(-1)?.response.instructions, /They may not have heard the earlier introduction/);
+    assert.match(responses().at(-1)?.response.instructions, /ask permission to continue/);
+    assert.equal(responses().at(-1)?.response.output_modalities, undefined, "human conversation uses the session audio modality");
+    await done();
+    turn("Yes, how can I help?");
+    assert.deepEqual(responses().at(-1), { type: "response.create" }, "normal conversation resumes after the new introduction");
+    assert.equal((await storedCall(call.id))?.result, undefined);
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+test("a business hold defers private answers and resumes without repeating the screening introduction", async () => {
+  const { call, ai, done, turn, state, responses } = await receptionCall();
+  try {
+    turn("Good morning, dental clinic. How can I help?");
+    assert.deepEqual(responses().at(-1), { type: "response.create" }, "ordinary business greeting keeps the normal audio flow");
+    await done();
+    const questionId = engine.askUser(call.id, "Would Friday work?", "approval")!;
+    turn("Please hold while I check with my colleague.");
+    await state("wait");
+    const count = responses().length;
+    await engine.answerUser(call.id, questionId, "Yes, Friday works.");
+    assert.equal(responses().length, count, "a private answer does not speak over a business hold");
+    assert.equal(engine.sessions.get(call.id)?.privateAnswerPending, true);
+    turn("Thank you for holding. Would Friday work?");
+    await state("human");
+    assert.match(responses().at(-1)?.response.instructions, /returned from a hold\/transfer/);
+    assert.match(responses().at(-1)?.response.instructions, /A private app answer arrived during the hold/);
+    assert.equal(engine.sessions.get(call.id)?.privateAnswerPending, false, "the deferred answer is consumed in the first resumed turn");
+    assert.doesNotMatch(responses().at(-1)?.response.instructions.split("NEXT TURN:")[1], /ask permission to continue/);
+    await done();
+    turn("Can you confirm Friday works?");
+    assert.deepEqual(responses().at(-1), { type: "response.create" }, "the private answer is not delivered twice");
+    assert.ok(ai.sent.some(event => event.item?.content?.some((part: { text?: string }) => part.text?.includes("Friday works"))));
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+for (const recording of [
+  { speech: "We are unavailable right now. Please call back after 5 PM.", summary: "No están disponibles. La grabación pide llamar después de las 17:00.", details: ["Llamar después de las 17:00."] },
+  { speech: "Our office is closed today. Please call tomorrow.", summary: "El negocio está cerrado hoy y pide llamar mañana.", details: ["Llamar mañana."] },
+  { speech: "Please leave your message after the tone.", summary: "Contestó un buzón de voz; no se dejó mensaje.", details: [] },
+]) {
+  test(`a terminal recording reports incomplete without voicemail, goodbye or redial: ${recording.speech}`, async () => {
+    const { call, phone, turn, state, responses } = await receptionCall();
+    turn(recording.speech);
+    const count = responses().length;
+    const dials = requests.filter(request => request.url === "https://api.telnyx.com/v2/calls").length;
+    await state("unavailable", recording.summary, recording.details);
+    assert.equal(responses().length, count, "no task details or goodbye are spoken into the recording");
+    assert.equal(phone.readyState, WebSocket.CLOSED);
+    const result = await storedCall(call.id);
+    assert.equal(result?.status, "completed");
+    assert.deepEqual(result?.result, { outcome: "incomplete", summary: recording.summary, details: recording.details });
+    assert.equal(requests.filter(request => request.url === "https://api.telnyx.com/v2/calls").length, dials);
+  });
+}
+
+test("screening cannot ask the user for decisions or treat an announcement as success", async () => {
+  const { call, turn, state, done, ai } = await receptionCall();
+  try {
+    turn("Record your name and reason for calling.");
+    await state("screening", "ToMoshiMoshi, an AI assistant calling about an appointment.");
+    await done();
+    turn("Thanks. Please stay on the line.");
+    await done("ask_user", { question: "May I book it?", kind: "approval" });
+    assert.equal((await storedCall(call.id))?.question, undefined);
+    await done("finish_call", { outcome: "success", summary: "Booked", details: [] });
+    assert.equal((await storedCall(call.id))?.result, undefined);
+    assert.ok(ai.sent.some(event => event.item?.output?.includes("RECIPIENT_NOT_CONNECTED")));
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+test("new human audio prevents a stale unavailable decision from ending the call", async () => {
+  const { call, turn, state, done, ai } = await receptionCall();
+  try {
+    turn("Record your name and reason for calling.");
+    await state("screening", "ToMoshiMoshi, an AI assistant calling about an appointment.");
+    await done();
+    turn("This person is not available.");
+    turn("Hello, who is this?");
+    await state("unavailable", "No disponible.");
+    assert.equal(engine.sessions.has(call.id), true);
+    assert.equal((await storedCall(call.id))?.result, undefined);
+    assert.ok(ai.sent.some(event => event.item?.output?.includes("new_recipient_audio")));
+    await state("human");
+    assert.equal(engine.sessions.get(call.id)?.stopping, undefined);
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+test("screening wait is bounded and repeated announcements cannot extend it", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { call, turn, state, done } = await receptionCall();
+  try {
+    turn("Record your name and reason for calling.");
+    await state("screening", "ToMoshiMoshi, an AI assistant calling about an appointment.");
+    await done();
+    t.mock.timers.tick(60000);
+    turn("Please stay on the line.");
+    await state("wait");
+    t.mock.timers.tick(60000);
+    await settle();
+    await settle();
+    const result = await storedCall(call.id);
+    assert.equal(result?.result?.outcome, "incomplete");
+    assert.match(result?.result?.summary || "", /agotara la espera/);
+    assert.equal(result?.status, "completed");
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+test("a human joining cancels the screening deadline", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { call, turn, state, done } = await receptionCall();
+  try {
+    turn("Record your name and reason for calling.");
+    await state("screening", "ToMoshiMoshi, an AI assistant calling about an appointment.");
+    await done();
+    t.mock.timers.tick(60000);
+    turn("Hello?");
+    await state("human");
+    await done();
+    t.mock.timers.tick(60000);
+    await settle();
+    assert.equal(engine.sessions.has(call.id), true, "the old screening timer cannot close a human conversation");
+    assert.equal((await storedCall(call.id))?.result, undefined);
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+test("successive transfers keep the same call and progress while orienting each new operator", async () => {
+  const { call, phone, ai, turn, state, done, responses } = await receptionCall();
+  const dials = requests.filter(request => request.url === "https://api.telnyx.com/v2/calls").length;
+  try {
+    for (const [announcement, greeting] of [
+      ["I'll transfer you to appointments.", "Appointments, Maria speaking. What is the call about?"],
+      ["I'll connect you with the dentist.", "Doctor Lee here. What date was offered?"],
+    ]) {
+      turn(announcement);
+      const count = responses().length;
+      await state("transfer");
+      assert.equal(responses().length, count, "transfer does not start a goodbye or repeat the request");
+      assert.equal(engine.sessions.get(call.id)?.socket, phone);
+      assert.equal(engine.sessions.get(call.id)?.ai, ai);
+      turn("Please stay on the line.");
+      assert.deepEqual(responses().at(-1)?.response.output_modalities, ["text"]);
+      await state("wait");
+      turn(greeting);
+      await state("human");
+      const nextTurn = responses().at(-1)?.response.instructions.split("NEXT TURN:")[1];
+      assert.match(nextTurn, /new operator/);
+      assert.match(nextTurn, /only the needed context/);
+      assert.match(nextTurn, /Preserve earlier progress and user approvals/);
+      assert.match(nextTurn, /check the status of any potentially completed action/);
+      await done();
+      assert.equal((await storedCall(call.id))?.result, undefined);
+    }
+    const transcript = (await storedCall(call.id))!.transcript;
+    assert.ok(transcript.some(line => line.original.includes("Maria speaking")), "previous operator context remains available");
+    assert.ok(transcript.some(line => line.original.includes("Doctor Lee")));
+    assert.equal(requests.filter(request => request.url === "https://api.telnyx.com/v2/calls").length, dials);
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+for (const transition of ["transfer", "new_operator"] as const) {
+  test(`${transition} invalidates a prior operator's readback before completion`, async () => {
+    const { call, phone, ai, turn, state, done } = await receptionCall();
+    try {
+      await done("confirm_details", { question: "Is the dental cleaning booked for Friday at 4 PM?" });
+      ai.event({ type: "response.output_audio.delta", item_id: "old-operator-readback", delta: "abcd" });
+      ai.event({ type: "response.output_audio.done", item_id: "old-operator-readback" });
+      await done();
+      phone.event({ event: "mark", mark: { name: "old-operator-readback" } });
+      const gate = engine.sessions.get(call.id)!.confirmation!;
+      turn(transition === "transfer" ? "Let me transfer you to scheduling." : "This is Maria, I am taking over for my colleague.");
+      assert.ok(gate.eligibleItemId, "the prior readback has a reply before the operator transition");
+      const revision = gate.revision;
+      await state(transition);
+      assert.ok(gate.revision > revision);
+      assert.equal(gate.eligibleItemId, undefined, "the old readback cannot confirm a new operator's result");
+      if (transition === "transfer") {
+        turn("Scheduling, can I help?");
+        await state("human");
+      }
+      await done();
+      turn("Yes.");
+      await done("finish_call", { outcome: "success", summary: "Booked", details: [] });
+      assert.equal((await storedCall(call.id))?.result, undefined, "requires a new final readback rather than a bare yes after handoff");
+      assert.ok(ai.sent.some(event => event.item?.output?.includes("RECIPIENT_CONFIRMATION_REQUIRED")));
+    } finally {
+      await engine.endCall(call.id, "cancelled");
+    }
+  });
+}
+
+test("non-addressed audio yields silently without turning the conversation into a timed hold", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { call, turn, state, responses } = await receptionCall();
+  try {
+    turn("Maria, could you check the appointment book for me?");
+    const count = responses().length;
+    await state("listen");
+    assert.equal(responses().length, count, "listening does not trigger a follow-up response");
+    t.mock.timers.tick(180000);
+    await settle();
+    assert.equal(engine.sessions.has(call.id), true, "background speech does not arm a recipient-hold deadline");
+    turn("Sorry about that, what day would you like?");
+    assert.deepEqual(responses().at(-1), { type: "response.create" }, "direct speech resumes the ongoing conversation without an introduction");
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
+
+test("a request to repeat interrupts playback and cancelled speech cannot perform an action", async () => {
+  const { call, phone, ai, turn, done, responses } = await receptionCall();
+  try {
+    turn("What day would you like?");
+    ai.event({ type: "response.output_audio.delta", item_id: "interrupted-preference", delta: "abcd" });
+    turn("Sorry, I couldn't hear the date. Could you repeat just the day?");
+    assert.ok(phone.sent.some(event => event.event === "clear"));
+    assert.ok(ai.sent.some(event => event.type === "conversation.item.truncate" && event.item_id === "interrupted-preference"));
+    const count = phone.sent.filter(event => event.event === "media").length;
+    ai.event({ type: "response.output_audio.delta", item_id: "interrupted-preference", delta: "abcd" });
+    assert.equal(phone.sent.filter(event => event.event === "media").length, count, "late audio cannot continue the interrupted speech");
+    ai.event({ type: "response.done", response: { status: "cancelled", output: [{
+      type: "function_call", name: "finish_call", call_id: randomUUID(),
+      arguments: JSON.stringify({ outcome: "incomplete", summary: "Couldn't hear", details: [] }),
+    }] } });
+    await settle();
+    assert.equal((await storedCall(call.id))?.result, undefined, "a hearing repair does not imply refusal or a disconnected call");
+    assert.deepEqual(responses().at(-1), { type: "response.create" }, "the latest request to repeat receives the next turn");
+    await done();
+    assert.equal(engine.sessions.get(call.id)?.socket, phone);
+  } finally {
+    await engine.endCall(call.id, "cancelled");
+  }
+});
