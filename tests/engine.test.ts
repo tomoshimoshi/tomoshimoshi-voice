@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as settle } from "node:timers/promises";
 import WebSocket from "ws";
+import { CallListener } from "../server/call-listener";
 import type { CallInput } from "../lib/types";
 const dir = mkdtempSync(join(tmpdir(), "tomoshimoshi-engine-"));
 process.env.CALLORI_DATA_DIR = dir;
@@ -86,6 +87,41 @@ class FakeSocket extends EventEmitter {
     this.emit("message", Buffer.from(JSON.stringify(event)));
   }
 }
+test("optional listening follows telephone audio and interruption without controlling the call", async () => {
+  const call = await engine.createCall(input, randomUUID(), userId);
+  assert.throws(() => engine.issueListenAccess(call.id, "another-user"), /CALL_ENDED/);
+  assert.equal(engine.sessions.get(call.id)?.listener, undefined);
+  const access = engine.issueListenAccess(call.id, userId);
+  assert.match(access.url, new RegExp(`/listen/${call.id}$`));
+  const listener = engine.sessions.get(call.id)!.listener!;
+  assert.ok(listener instanceof CallListener);
+  assert.equal(listener.consume(access.ticket), true);
+  const heard: (string | Buffer)[] = [];
+  const observer = Object.assign(new EventEmitter(), {
+    readyState: WebSocket.OPEN as number, bufferedAmount: 0,
+    send(data: string | Buffer) { heard.push(data); },
+    ping() {}, terminate(this: EventEmitter & { readyState: number }) { this.readyState = WebSocket.CLOSED; this.emit("close"); },
+  });
+  listener.attach(observer as unknown as WebSocket);
+  const phone = new FakeSocket(), ai = new FakeSocket();
+  engine.attachMedia(call.id, phone as unknown as WebSocket, () => ai as unknown as WebSocket);
+  phone.event({ event: "start", start: { call_control_id: "test-control-id", media_format: { encoding: "PCMU", sample_rate: 8000 } } });
+  ai.event({ type: "session.updated" });
+  phone.event({ event: "media", media: { track: "inbound", payload: "//8=" } });
+  ai.event({ type: "response.output_audio.delta", item_id: "listen-agent", delta: "//8=" });
+  ai.event({ type: "input_audio_buffer.speech_started", item_id: "listen-recipient" });
+  assert.deepEqual(heard, [Buffer.from([0, 255, 255]), Buffer.from([1, 255, 255]), "clear"]);
+  ai.event({ type: "response.output_audio.delta", item_id: "listen-agent", delta: "//8=" });
+  assert.equal(heard.length, 3, "interrupted model audio never reaches the listener");
+  observer.bufferedAmount = 128 * 1024 + 1;
+  phone.event({ event: "media", media: { track: "inbound", payload: "//8=" } });
+  assert.equal(observer.readyState, WebSocket.CLOSED);
+  assert.equal(phone.readyState, WebSocket.OPEN);
+  assert.equal(ai.readyState, WebSocket.OPEN);
+  const late = listener.issue();
+  await engine.endCall(call.id, "cancelled");
+  assert.equal(listener.consume(late.ticket), false);
+});
 const input: CallInput = {
   phone: "+81451234567",
   objective: "Book a dental appointment",

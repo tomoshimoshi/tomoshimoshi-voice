@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { once } from "node:events";
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { signIdentity } from "../lib/internal-identity";
+import WebSocket from "ws";
 // Provider credentials and dotenv loading are disabled for the whole process.
 process.env.DOTENV_CONFIG_PATH = "/dev/null";
 process.env.CALLORI_INTERNAL_TOKEN = "http-tests-secret-at-least-32-characters";
@@ -343,5 +344,79 @@ test("exhausting the read quota leaves a separate budget for call controls", asy
     });
     // Owner lookup still executes: an absent call is 404, never a read-quota 429.
     assert.equal(response.status, 404);
+  }
+});
+
+test("live listen HTTP and WebSocket enforce owner, origin, expiry and ticket replay", async () => {
+  const engine = await import("../server/engine");
+  const store = await import("../server/store");
+  const { credit } = await import("../server/wallet");
+  const userId = await store.ensureUser({ sub: "listen-owner", email: "listen-owner@example.test", emailVerified: true });
+  await store.saveProfile({ ...store.defaultProfile, firstName: "Test", lastName: "Listener" }, userId);
+  await store.transaction(tx => credit(tx, userId, 5000n, { type: "fixture", id: randomUUID(), key: randomUUID() }));
+  const configured = {
+    OPENAI_API_KEY: "synthetic", TELNYX_API_KEY: "synthetic", TELNYX_CONNECTION_ID: "synthetic",
+    TELNYX_FROM_NUMBER: "+81312345678", TELNYX_PUBLIC_KEY: "synthetic",
+    PUBLIC_BASE_URL: "https://voice.example.test", ALLOWED_PHONE_NUMBERS: "+817012345678", LIVE_CALLS_ENABLED: "true",
+  };
+  const previous = Object.fromEntries(Object.keys(configured).map(key => [key, process.env[key]]));
+  Object.assign(process.env, configured);
+  const realFetch = globalThis.fetch;
+  const mockFetch = mock.method(globalThis, "fetch", async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (String(url).startsWith("https://api.telnyx.com/v2/calls"))
+      return Response.json({ data: { call_control_id: "listen-fixture", result: "ok" } });
+    return realFetch(url, init);
+  });
+  let id: string | undefined;
+  const sockets: WebSocket[] = [];
+  const access = (identity = "listen-owner") => fetch(`${base}/calls/${id}/listen`, { method: "POST", headers: headers(identity), body: "{}" });
+  const connect = (ticket: string, origin = process.env.APP_BASE_URL!) => {
+    const socket = new WebSocket(`${base.replace("http:", "ws:")}/listen/${id}`, ["tomoshimoshi-listen", `ticket.${ticket}`], { origin });
+    sockets.push(socket); return socket;
+  };
+  async function denied(ticket: string, origin?: string) {
+    const socket = connect(ticket, origin);
+    const [error] = await once(socket, "error");
+    assert.match(error.message, /401/);
+  }
+  try {
+    const call = await engine.createCall({ phone: "+817012345678", objective: "Ask opening hours", context: "", constraints: "", language: "ja", mode: "live", shareProfile: false, scenario: "inquiry" }, randomUUID(), userId);
+    id = call.id;
+    assert.equal((await fetch(`${base}/calls/${id}/listen`, { method: "POST" })).status, 401);
+    assert.equal((await access("listen-stranger")).status, 404);
+    assert.equal((await fetch(`${base}/calls/${id}/listen`, { headers: headers("listen-owner") })).status, 404);
+    const grantResponse = await access();
+    assert.equal(grantResponse.status, 200);
+    assert.equal(grantResponse.headers.get("cache-control"), "no-store");
+    const grant = await grantResponse.json();
+    assert.equal(grant.url, `wss://voice.example.test/listen/${id}`);
+    await denied(grant.ticket, "https://attacker.test");
+    await denied("x".repeat(43));
+    const socket = connect(grant.ticket);
+    await once(socket, "open");
+    assert.equal(socket.protocol, "tomoshimoshi-listen", "the secret ticket is never echoed as the selected protocol");
+    const message = once(socket, "message");
+    engine.sessions.get(id)!.listener!.audio("recipient", Buffer.from([255, 255]));
+    assert.deepEqual((await message)[0], Buffer.from([0, 255, 255]));
+    await denied(grant.ticket);
+    const closed = once(socket, "close");
+    socket.send("unexpected microphone audio");
+    await closed;
+    assert.ok(engine.sessions.has(id), "a writing listener cannot end the phone call");
+    const expired = engine.sessions.get(id)!.listener!.issue(Date.now() - 31_000);
+    await denied(expired.ticket);
+    const finalGrant = await (await access()).json();
+    const finalSocket = connect(finalGrant.ticket);
+    await once(finalSocket, "open");
+    const ended = once(finalSocket, "close");
+    await engine.endCall(id, "cancelled");
+    await ended;
+    assert.equal((await access()).status, 409);
+    await denied(finalGrant.ticket);
+  } finally {
+    sockets.forEach(socket => socket.terminate());
+    if (id) await engine.endCall(id, "cancelled");
+    mockFetch.mock.restore();
+    Object.assign(process.env, previous);
   }
 });

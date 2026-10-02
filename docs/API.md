@@ -22,6 +22,7 @@ Nunca generar esta firma ni exponer el secreto en componentes del navegador. Los
 | `GET /calls/:id` | UUID | Llamada completa, transcripción y resultado |
 | `POST /calls/:id/answer` | `{questionId, answer}` | Llamada actualizada |
 | `POST /calls/:id/cancel` | Sin campos de negocio | Llamada tras solicitar terminación y persistir estado |
+| `POST /calls/:id/listen` | Sin campos de negocio | `{url, ticket, expiresAt}`; solo propietario de llamada activa; ticket de un uso, 30 segundos, máximo 10 solicitudes/minuto por usuario |
 | `PUT /profile` | Perfil completo validado | Perfil guardado |
 | `GET /contacts` | — | Contactos del usuario |
 | `POST /contacts` | `{placeId, country: "JP"}` | Lista tras guardar |
@@ -32,6 +33,8 @@ Nunca generar esta firma ni exponer el secreto en componentes del navegador. Los
 | `GET /billing/payments/:id` | UUID | `{id, status, amount, currency}` del propietario |
 
 Las mutaciones a través del proxy requieren el origen web exacto y `Content-Type: application/json`, incluso si la cancelación no necesita campos. No existe una API HTTP de reembolso ni de conciliación administrativa.
+
+La escucha abre `WSS /listen/:id` con los subprotocolos `tomoshimoshi-listen` y `ticket.TICKET`. Se exige `Origin` igual a `APP_BASE_URL`, sesión activa y ticket válido; la respuesta selecciona únicamente `tomoshimoshi-listen`. Las muestras binarias PCMU a 8 kHz llevan un byte de pista (0 destinatario, 1 IA); el mensaje de texto `clear` vacía solo la IA pendiente. No se conserva audio previo ni se permite enviar audio/controles por esta conexión. Solo hay un oyente por llamada; uno nuevo sustituye al anterior. El proxy web sustituye la URL de escucha por su origen de voz configurado, también permitido en CSP.
 
 Para paginar llamadas, usar conjuntamente `createdAt` e `id` del último elemento como `before` y `beforeId`; así no se pierden llamadas con la misma fecha.
 

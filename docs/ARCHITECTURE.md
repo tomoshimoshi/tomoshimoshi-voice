@@ -24,8 +24,9 @@ flowchart LR
 
 Hay dos vías distintas:
 
-- **Control y estado:** navegador → Next.js → API de voz → PostgreSQL. La interfaz consulta periódicamente el estado; no recibe el audio ni abre el WebSocket de Telnyx. El panel consulta cada 5 segundos en primer plano y el detalle activo cada 1,2 segundos; las pestañas ocultas reducen esa frecuencia.
+- **Control y estado:** navegador → Next.js → API de voz → PostgreSQL. La interfaz consulta periódicamente el estado; no abre el WebSocket de Telnyx. El panel consulta cada 5 segundos en primer plano y el detalle activo cada 800 ms; las pestañas ocultas reducen esa frecuencia.
 - **Audio:** teléfono ↔ Telnyx ↔ worker ↔ OpenAI Realtime. Los sockets permanecen abiertos en el worker mientras dura la llamada. Las traducciones de texto se solicitan aparte y no se vuelven a introducir como conversación telefónica.
+- **Escucha opcional:** un clic abre un WSS separado del worker al navegador del propietario. Reutiliza PCMU existente, sin sesiones extra de IA ni grabaciones. Un ticket aleatorio de 30 segundos, de un solo uso y emitido tras verificar al propietario, autoriza la conexión con el origen web exacto. Viaja en un subprotocolo, nunca en la URL. Solo se mantiene un oyente por llamada; sin oyente no se decodifican ni copian sus paquetes. Los paquetes binarios llevan un byte de pista (0: destinatario; 1: IA) y las muestras PCMU; `clear` detiene la voz pendiente de IA. El buffer de red se limita a 128 KiB y un oyente lento/fallido se desconecta sin afectar a la telefonía. El socket no acepta audio ni controles del cliente y se cierra al terminar la llamada.
 
 Vercel sirve la web. El contenedor de Railway ejecuta únicamente `node --import tsx server/index.ts`, sin Next.js ni React. Se conserva un dominio HTTPS estable para API, callbacks y medios.
 

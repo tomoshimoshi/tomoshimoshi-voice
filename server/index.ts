@@ -28,7 +28,9 @@ import {
   flushCall,
   storageHealthy,
   liveCall,
+  issueListenAccess,
 } from "./engine";
+import { listenProtocol, listenTicket } from "./call-listener";
 import {
   calls,
   ensureUser,
@@ -71,6 +73,7 @@ const submitSupport = createSupportService({ getCall });
 const allowRequest = createRateLimiter();
 const allowPaymentRefresh = createRateLimiter(20);
 const allowCallControl = createRateLimiter(60);
+const allowListenAccess = createRateLimiter(10);
 const token = internalToken();
 const listener = voiceListener();
 let accepting = false;
@@ -351,7 +354,7 @@ const server = createServer(async (req, res) => {
       return json(res, 201, call);
     }
     const match = url.pathname.match(
-      /^\/calls\/([0-9a-f-]{36})(?:\/(answer|cancel))?$/,
+      /^\/calls\/([0-9a-f-]{36})(?:\/(answer|cancel|listen))?$/,
     );
     if (match) {
       const id = z.uuid().parse(match[1]);
@@ -360,6 +363,10 @@ const server = createServer(async (req, res) => {
         return json(res, 404, { error: "NOT_FOUND" });
       if (req.method === "GET" && !match[2])
         return json(res, 200, { ...stored, ...(liveCall(id, userId) || {}), billing: stored.billing });
+      if (req.method === "POST" && match[2] === "listen")
+        return !allowListenAccess(identity.sub)
+          ? json(res, 429, { error: "API_RATE_LIMIT" })
+          : json(res, 200, issueListenAccess(id, userId));
       if (req.method === "POST" && match[2] === "answer") {
         const data = answerSchema.parse(JSON.parse(await body(req)));
         return json(
@@ -436,9 +443,26 @@ const server = createServer(async (req, res) => {
   }
 });
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+const listeners = new WebSocketServer({
+  noServer: true, maxPayload: 1024, perMessageDeflate: false,
+  handleProtocols: () => listenProtocol,
+});
 server.on("upgrade", (req, socket, head) => {
   try {
     const url = new URL(req.url || "/", "http://localhost");
+    const listen = url.pathname.match(/^\/listen\/([0-9a-f-]{36})$/);
+    if (listen) {
+      const session = sessions.get(listen[1]);
+      const ticket = listenTicket(req.headers["sec-websocket-protocol"], req.headers.origin);
+      if (!accepting || !storageHealthy() || session?.stopping || !ticket ||
+        !session?.listener?.consume(ticket)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      listeners.handleUpgrade(req, socket, head, ws => session.listener!.attach(ws));
+      return;
+    }
     const match = url.pathname.match(/^\/media\/([0-9a-f-]{36})$/);
     if (
       !accepting ||
@@ -507,6 +531,7 @@ export async function shutdown(exit = false) {
     [...sessions.keys()].map((id) => endCall(id, "failed", "SERVER_RESTART")),
   );
   wss.close();
+  listeners.close();
   await billingRun;
   await closeDatabase();
   await workerLock.end();

@@ -2,6 +2,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import { z } from "zod";
 import { ConfirmationGate } from "./confirmation";
+import { CallListener } from "./call-listener";
 import type { Call, CallInput, Transcript, Profile } from "../lib/types";
 import { terminal } from "../lib/types";
 import {
@@ -33,6 +34,7 @@ import { markCallEnded } from "./calls/billing";
 import { billingLog } from "./billing/events";
 import { hangupReason, hangupStatus, type HangupDetails } from "./calls/end-reason";
 type Session = {
+  listener?: CallListener;
   token: string;
   controlId?: string;
   socket?: WebSocket;
@@ -84,6 +86,7 @@ function saveCall(call: Call) {
     }
     session?.ai?.close();
     session?.socket?.close();
+    session?.listener?.close();
     // Stop the provider even when persistence is unavailable. Recovery retries on restart.
     if (session?.controlId)
       void hangup(
@@ -99,6 +102,19 @@ export function liveCall(id: string, userId: string) {
   if (sessions.get(id)?.userId !== userId) return undefined;
   const call = getCall(id);
   return call && !terminal(call.status) ? structuredClone(call) : undefined;
+}
+export function issueListenAccess(id: string, userId: string) {
+  const call = getCall(id);
+  const session = sessions.get(id);
+  if (!call || terminal(call.status) || call.mode !== "live" || !session ||
+    session.userId !== userId || session.stopping) throw new Error("CALL_ENDED");
+  const origin = new URL(process.env.PUBLIC_BASE_URL || "http://localhost:3001");
+  origin.protocol = origin.protocol === "https:" ? "wss:" : "ws:";
+  origin.pathname = `/listen/${id}`;
+  origin.search = "";
+  origin.hash = "";
+  const grant = (session.listener ??= new CallListener()).issue();
+  return { url: origin.toString(), ...grant };
 }
 export function storageHealthy() {
   return storageFailures.size === 0;
@@ -375,6 +391,7 @@ async function performEndCall(
   if (s) {
     s.stopping = true;
     s.closing = true;
+    s.listener?.close();
     s.ai?.close();
     s.socket?.close();
     await s.dialReady;
@@ -649,14 +666,17 @@ export function attachMedia(
     s.requestResponse?.("retry");
     later(id, 15000, () => void endCall(id, "failed", "ANSWER_TIMEOUT"));
   };
-  const sendPhone = (event: unknown) => {
+  const sendPhone = (event: { event: string; media?: { payload: string }; mark?: { name: string } }) => {
     if (socket.readyState === WebSocket.OPEN) {
       if (socket.bufferedAmount > 1024 * 1024) {
         void endCall(id, "failed", "AUDIO_BACKPRESSURE");
-        return;
+        return false;
       }
       socket.send(JSON.stringify(event));
+      if (event.event === "clear") s.listener?.clearAgent();
+      return true;
     }
+    return false;
   };
   const fail = (code: string) => {
     void endCall(id, "failed", code);
@@ -791,9 +811,11 @@ export function attachMedia(
                 outputStarted = Date.now();
                 outputBytes = 0;
               }
-              outputBytes += Buffer.from(e.delta, "base64").length;
+              const audio = Buffer.from(e.delta, "base64");
+              outputBytes += audio.length;
               playbackComplete = false;
-              sendPhone({ event: "media", media: { payload: e.delta } });
+              if (sendPhone({ event: "media", media: { payload: e.delta } }))
+                s.listener?.audio("agent", audio);
             }
             if (e.type === "response.output_audio.done")
               sendPhone({ event: "mark", mark: { name: outputItem } });
@@ -1062,6 +1084,7 @@ export function attachMedia(
       ) {
         const payload = event.media?.payload;
         if (typeof payload !== "string") return;
+        s.listener?.audio("recipient", payload);
         if (ready) send({ type: "input_audio_buffer.append", audio: payload });
         else if (queued.length < 250 && queuedBytes + payload.length <= 1024 * 1024) {
           queued.push(payload);
