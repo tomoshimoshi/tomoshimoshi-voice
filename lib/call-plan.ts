@@ -1,4 +1,4 @@
-import { localeIndex } from "./types";
+import { appointmentCategoryCopy } from "./appointment-categories";
 import type { CallInput, Locale, Profile } from "./types";
 import {
   callingCountries,
@@ -20,6 +20,7 @@ export type CallPlan = {
   country: CallingCountry;
   language: CallInput["language"];
   shareProfile: boolean;
+  canFillJapaneseForms: boolean | null;
   notes: string;
   reference: string;
   people: number;
@@ -50,27 +51,6 @@ export const purposeLabels = {
     custom: "その他",
   },
 };
-export const categoryLabels = {
-  en: {
-    dentist: "Dentist",
-    doctor: "Doctor",
-    beauty: "Beauty & wellness",
-    other: "Another service",
-  },
-  es: {
-    dentist: "Dentista",
-    doctor: "Médico",
-    beauty: "Belleza y bienestar",
-    other: "Otro servicio",
-  },
-
-  ja: {
-    dentist: "歯科",
-    doctor: "医療機関",
-    beauty: "美容・ウェルネス",
-    other: "その他のサービス",
-  },
-};
 export function fullName(profile: Pick<Profile, "firstName" | "lastName">) {
   return [profile.firstName.trim(), profile.lastName.trim()]
     .filter(Boolean)
@@ -87,7 +67,8 @@ export function newPlan(purpose: Purpose = "appointment"): CallPlan {
     phone: "",
     country: defaultCallingCountry,
     language: "ja",
-    shareProfile: false,
+    shareProfile: true,
+    canFillJapaneseForms: null,
     notes: "",
     reference: "",
     people: 2,
@@ -98,32 +79,18 @@ export function newPlan(purpose: Purpose = "appointment"): CallPlan {
 export function needsDates(purpose: Purpose) {
   return purpose === "appointment" || purpose === "restaurant";
 }
+export function needsJapaneseForms(plan: Pick<CallPlan, "purpose" | "category">) {
+  return plan.purpose === "appointment" &&
+    appointmentCategoryCopy(plan.category, "en")?.service === "health";
+}
 export function callTitle(
   plan: Pick<CallPlan, "purpose" | "category">,
   locale: Locale,
 ) {
   if (plan.purpose !== "appointment")
     return purposeLabels[locale][plan.purpose];
-  const titles: Record<string, [string, string, string]> = {
-    dentist: [
-      "Booking a dentist appointment",
-      "Una cita con el dentista",
-      "歯科の予約",
-    ],
-    doctor: [
-      "Booking a doctor’s appointment",
-      "Una cita con el médico",
-      "医療機関の予約",
-    ],
-    beauty: [
-      "Booking a little time for you",
-      "Un momento para ti",
-      "自分のための時間を予約",
-    ],
-    other: ["Booking your appointment", "Tu próxima cita", "次の予約"],
-  };
   return (
-    titles[plan.category]?.[localeIndex(locale)] ||
+    appointmentCategoryCopy(plan.category, locale)?.title ||
     (locale === "ja"
       ? "通話の準備が進んでいます"
       : locale === "es"
@@ -131,6 +98,7 @@ export function callTitle(
         : "Your call, taking shape")
   );
 }
+
 export function formatDateOption(d: DateOption, locale: Locale) {
   const date = new Intl.DateTimeFormat(locale, { dateStyle: "long" }).format(
     new Date(`${d.date}T12:00:00`),
@@ -153,26 +121,9 @@ export function buildCallInput(plan: CallPlan, locale: Locale): CallInput {
   const timezone = callingCountries.find(
     (country) => country.code === plan.country,
   )!.timezone;
-  const appointmentRequest: Record<string, [string, string, string]> = {
-    dentist: [
-      "Book a dentist appointment",
-      "Pedir una cita con el dentista",
-      "歯科を予約する",
-    ],
-    doctor: [
-      "Book a doctor’s appointment",
-      "Pedir una cita con el médico",
-      "医療機関を予約する",
-    ],
-    beauty: [
-      "Book a beauty or wellness appointment",
-      "Pedir una cita de belleza y bienestar",
-      "美容・ウェルネスの予約をする",
-    ],
-  };
   const objective =
     plan.purpose === "appointment"
-      ? `${appointmentRequest[plan.category]?.[localeIndex(locale)] || purposeLabels[locale].appointment}: ${plan.reason.trim()}`
+      ? `${appointmentCategoryCopy(plan.category, locale)?.request || purposeLabels[locale].appointment}: ${plan.reason.trim()}`
       : plan.purpose === "restaurant"
         ? locale === "ja"
           ? `${plan.people}名分の席を予約する。`
@@ -187,6 +138,12 @@ export function buildCallInput(plan: CallPlan, locale: Locale): CallInput {
     plan.purpose === "appointment" &&
       plan.patient &&
       `Existing patient/customer: ${plan.patient}`,
+    needsJapaneseForms(plan) &&
+      (plan.canFillJapaneseForms === true
+        ? "Japanese clinic forms: the user can complete intake forms in Japanese independently. If the clinic asks, use this answer. This does not establish spoken Japanese ability."
+        : plan.canFillJapaneseForms === false
+          ? "Japanese clinic forms: the user needs help completing intake forms in Japanese. If the clinic asks, explain this and ask what assistance or alternative-language forms are available. Do not promise that the user will bring an interpreter."
+          : "Japanese clinic forms: the user's ability is not specified. If the clinic asks, ask the app user privately before answering; do not assume their ability."),
     plan.purpose === "followup" &&
       plan.reference.trim() &&
       `Case/order/appointment reference: ${plan.reference.trim()}`,
